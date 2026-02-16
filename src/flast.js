@@ -116,10 +116,8 @@ function extractNodesFromRoot(rootNode, opts) {
 	const allNodes = [];
 	const scopes = opts.detailed ? getAllScopes(rootNode) : {};
 
-	const stack = [rootNode];
-	while (stack.length) {
-		const node = stack.shift();
-		if (node.nodeId) continue;
+	function parseNode (node) {
+		if (node.nodeId) return;
 		node.childNodes = node.childNodes || [];
 		const childrenLoc = {};  								// Store the location of child nodes to sort them by order
 		node.parentKey = node.parentKey || '';	// Make sure parentKey exists
@@ -148,7 +146,6 @@ function extractNodesFromRoot(rootNode, opts) {
 			}
 		}
 		// Add the child nodes to top of the stack and populate the node's childNodes array
-		stack.unshift(...Object.values(childrenLoc));
 		node.childNodes.push(...Object.values(childrenLoc));
 
 		allNodes.push(node);
@@ -168,7 +165,14 @@ function extractNodesFromRoot(rootNode, opts) {
 		// (~2.4 nodes for 3 Gib).
 		if (opts.includeSrc && !node.src) 
 			node.src = rootNode.src.substring(node.start,node.end);
+		return childrenLoc;
 	}
+
+	const stack = [rootNode];
+	while (stack.length) {
+		stack.unshift(...Object.values(parseNode(stack.shift())));
+	}
+
 	if (opts.detailed) {
 		const identifiers = typeMap.Identifier || [];
 		const scopeVarMaps = buildScopeVarMaps(scopes);
