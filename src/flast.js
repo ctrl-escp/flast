@@ -174,23 +174,20 @@ function extractNodesFromRoot(rootNode, opts) {
 
 	let nodeId = 0;
 	let visitor = rootNode;
+	const lastParsed = {};
 	while (visitor) {
 		if(!visitor.childNodes){
-			allNodes.push(parseNode(opts, rootNode, scopes, nodeId, visitor));
-			nodeId++;
+			allNodes.push(parseNode(opts, rootNode, scopes, nodeId++, visitor));
 			typeMap[visitor.type] = typeMap[visitor.type] || [];
 			typeMap[visitor.type].push(visitor);
+			lastParsed[visitor.nodeId] = 0;
 		}
-		let parsedAllChildNodes = true;
-		for(let i = 0; i < visitor.childNodes.length; ++i){
-			if(!visitor.childNodes[i].nodeId){
-				parsedAllChildNodes = false;
-				visitor = visitor.childNodes[i];
-				break;
-			}
-		}
-		if(parsedAllChildNodes){
+		let visitorId = visitor.nodeId;
+		if(lastParsed[visitorId] < visitor.childNodes.length){
+			visitor = visitor.childNodes[lastParsed[visitorId]++];
+		}else{
 			visitor = visitor.parentNode;
+			delete lastParsed[visitorId];
 		}
 	}
 
