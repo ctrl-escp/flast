@@ -4,22 +4,21 @@ import {createHash} from 'node:crypto';
 
 const generateHash = str => createHash('sha256').update(str).digest('hex');
 
-
 /**
  * Apply functions to modify the script repeatedly until they are no long effective or the max number of iterations is reached.
- * @param {string} script The target script to run the functions on.
+ * @param {Arborist} arborist Arborist instance with AST to run the functions on.
  * @param {function[]} funcs
  * @param {number?} maxIterations (optional) Stop the loop after this many iterations at most.
- * @return {string} The possibly modified script.
+ * @return {Arborist} The possibly modified Arborist object.
  */
-function applyIteratively(script, funcs, maxIterations = 500) {
+function applyIterativelyArborist(arborist, funcs, maxIterations = 500) {
 	let scriptSnapshot = '';
 	let currentIteration = 0;
 	let changesCounter = 0;
 	let iterationsCounter = 0;
+	let script = arborist.script;
 	try {
 		let scriptHash = generateHash(script);
-		let arborist = new Arborist(script);
 		while (arborist.ast?.length && scriptSnapshot !== script && currentIteration < maxIterations) {
 			const iterationStartTime = Date.now();
 			scriptSnapshot = script;
@@ -60,7 +59,24 @@ function applyIteratively(script, funcs, maxIterations = 500) {
 	} catch (e) {
 		logger.error(`[-] Error on iteration #${iterationsCounter}: ${e}\n${e.stack}`);
 	}
-	return script;
+	return arborist;
 }
 
-export {applyIteratively};
+/**
+ * Apply functions to modify the script repeatedly until they are no long effective or the max number of iterations is reached.
+ * @param {string} script The target script to run the functions on.
+ * @param {function[]} funcs
+ * @param {number?} maxIterations (optional) Stop the loop after this many iterations at most.
+ * @return {string} The possibly modified script.
+ */
+function applyIteratively(script, funcs, maxIterations = 500) {
+	let arborist;
+	try {
+		arborist = new Arborist(script);
+	} catch (e) {
+		logger.error(`[-] Error creating Arborist instance: ${e}\n${e.stack}`);
+	}
+	return applyIterativelyArborist(arborist, funcs, maxIterations).script;
+}
+
+export {applyIteratively, applyIterativelyArborist};
