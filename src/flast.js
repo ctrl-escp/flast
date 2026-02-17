@@ -39,15 +39,6 @@ const generateFlatASTDefaultOptions = {
 };
 
 /**
- * Return a function which retrieves a node's source on demand
- * @param {string} src
- * @returns {function(number, number): string}
- */
-function createSrcClosure(src) {
-	return function(start, end) {return src.slice(start, end);};
-}
-
-/**
  * @param {string} inputCode
  * @param {object} opts Optional changes to behavior. See generateFlatASTDefaultOptions for available options.
  * @return {ASTNode[]} An array of flattened AST
@@ -96,13 +87,13 @@ function generateRootNode(inputCode, opts = {}) {
 	let rootNode;
 	try {
 		rootNode = parseCode(inputCode, parseOpts);
-		if (opts.includeSrc) rootNode.srcClosure = createSrcClosure(inputCode);
+		if (opts.includeSrc) rootNode.src = inputCode;
 	} catch (e) {
 		// If any parse error occurs and alternateSourceTypeOnFailure is set, try 'script' mode
 		if (opts.alternateSourceTypeOnFailure) {
 			try {
 				rootNode = parseCode(inputCode, {...parseOpts, sourceType: 'script'});
-				if (opts.includeSrc) rootNode.srcClosure = createSrcClosure(inputCode);
+				if (opts.includeSrc) rootNode.src = inputCode;
 			} catch (e2) {
 				logger.debug('Failed to parse as module and script:', e, e2);
 			}
@@ -172,9 +163,7 @@ function extractNodesFromRoot(rootNode, opts) {
 			}
 		}
 		// Add a getter for the node's source code
-		if (opts.includeSrc && !node.src) Object.defineProperty(node, 'src', {
-			get() {return rootNode.srcClosure(node.start, node.end);},
-		});
+		if (opts.includeSrc && !node.src) node.src = rootNode.src.substring(node.start,node.end);
 	}
 	if (opts.detailed) {
 		const identifiers = typeMap.Identifier || [];
