@@ -12,26 +12,29 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/HumanSecurity/flast.git"
+    "url": "git+https://github.com/ctrl-escp/flast.git"
   },
   "keywords": [
     "js",
     "javascript",
     "AST"
   ],
-  "author": "Ben Baryo (ben.baryo@humansecurity.com)",
+  "author": "Ben Baryo (ben.baryo@gmail.com)",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/HumanSecurity/flast/issues"
+    "url": "https://github.com/ctrl-escp/flast/issues"
   },
-  "homepage": "https://github.com/HumanSecurity/flast#readme",
+  "homepage": "https://github.com/ctrl-escp/flast#readme",
   "dependencies": {
     "escodegen": "npm:@javascript-obfuscator/escodegen",
-    "eslint-scope": "^8.4.0",
+    "eslint-scope": "^9.1.0",
     "espree": "^10.4.0"
   },
   "devDependencies": {
-    "eslint": "^9.34.0",
+    "eslint": "^10.0.0",
+    "@eslint/js": "^10.0.1",
+    "@eslint/eslintrc": "^3.3.3",
+    "globals": "^17.3.0",
     "husky": "^9.1.7"
   }
 }
