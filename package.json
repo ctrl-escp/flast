@@ -27,11 +27,14 @@
   "homepage": "https://github.com/HumanSecurity/flast#readme",
   "dependencies": {
     "escodegen": "npm:@javascript-obfuscator/escodegen",
-    "eslint-scope": "^8.4.0",
+    "eslint-scope": "^9.1.0",
     "espree": "^10.4.0"
   },
   "devDependencies": {
-    "eslint": "^9.34.0",
+    "eslint": "^10.0.0",
+    "@eslint/js": "^10.0.1",
+    "@eslint/eslintrc": "^3.3.3",
+    "globals": "^17.3.0",
     "husky": "^9.1.7"
   }
 }
