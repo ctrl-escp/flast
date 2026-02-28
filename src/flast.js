@@ -105,70 +105,92 @@ function generateRootNode(inputCode, opts = {}) {
 }
 
 /**
+ * @param {object} opts
+ * @param {ASTNode} rootNode
+ * @param {{number: ASTScope}} scopes
+ * @param {number} nodeId
+ * @param {ASTNode} node
+ * @return {ASTNode}
+ */
+function parseNode (opts, rootNode, scopes, nodeId, node) {
+	if (node.nodeId) return;
+	node.childNodes = node.childNodes || [];
+	const childrenLoc = {}; // Store the location of child nodes to sort them by order
+	node.parentKey = node.parentKey || '';	// Make sure parentKey exists
+	// Iterate over all keys of the node to find child nodes
+	const keys = Object.keys(node);
+	for (let i = 0; i < keys.length; i++) {
+		const key = keys[i];
+		if (excludedParentKeys.includes(key)) continue;
+		const content = node[key];
+		if (content && typeof content === 'object') {
+			// Sort each child node by its start position
+			// and set the parentNode and parentKey attributes
+			if (Array.isArray(content)) {
+				for (let j = 0; j < content.length; j++) {
+					const childNode = content[j];
+					if (!childNode) continue;
+					childNode.parentNode = node;
+					childNode.parentKey = key;
+					childrenLoc[childNode.start] = childNode;
+				}
+			} else {
+				content.parentNode = node;
+				content.parentKey = key;
+				childrenLoc[content.start] = content;
+			}
+		}
+	}
+	// Add the child nodes to top of the stack and populate the node's childNodes array
+	node.childNodes.push(...Object.values(childrenLoc));
+
+	node.nodeId = nodeId;
+	if (opts.detailed) {
+		node.scope = scopes[node.scopeId] || node.parentNode?.scope;
+		node.lineage = [...node.parentNode?.lineage || []];
+		if (!node.lineage.includes(node.scope.scopeId)) {
+			node.lineage.push(node.scope.scopeId);
+		}
+	}
+	// Avoid using a getter with a closure around source here, as the 
+	// memory requirement for a function per node is far greater than using 
+	// a string reference for sufficiently large AST Trees 
+	// (~2.4 nodes for 3 Gib).
+	if (opts.includeSrc && !node.src) 
+		node.src = rootNode.src.substring(node.start,node.end);
+	return node;
+}
+
+/**
  * @param rootNode
  * @param opts
  * @return {ASTNode[]}
  */
 function extractNodesFromRoot(rootNode, opts) {
 	opts = {...generateFlatASTDefaultOptions, ...opts};
-	let nodeId = 0;
 	const typeMap = {};
 	const allNodes = [];
 	const scopes = opts.detailed ? getAllScopes(rootNode) : {};
 
-	const stack = [rootNode];
-	while (stack.length) {
-		const node = stack.shift();
-		if (node.nodeId) continue;
-		node.childNodes = node.childNodes || [];
-		const childrenLoc = {};  								// Store the location of child nodes to sort them by order
-		node.parentKey = node.parentKey || '';	// Make sure parentKey exists
-		// Iterate over all keys of the node to find child nodes
-		const keys = Object.keys(node);
-		for (let i = 0; i < keys.length; i++) {
-			const key = keys[i];
-			if (excludedParentKeys.includes(key)) continue;
-			const content = node[key];
-			if (content && typeof content === 'object') {
-				// Sort each child node by its start position
-				// and set the parentNode and parentKey attributes
-				if (Array.isArray(content)) {
-					for (let j = 0; j < content.length; j++) {
-						const childNode = content[j];
-						if (!childNode) continue;
-						childNode.parentNode = node;
-						childNode.parentKey = key;
-						childrenLoc[childNode.start] = childNode;
-					}
-				} else {
-					content.parentNode = node;
-					content.parentKey = key;
-					childrenLoc[content.start] = content;
-				}
-			}
+	let nodeId = 0;
+	let visitor = rootNode;
+	const lastParsed = {};
+	while (visitor) {
+		if(!visitor.childNodes){
+			allNodes.push(parseNode(opts, rootNode, scopes, nodeId++, visitor));
+			typeMap[visitor.type] = typeMap[visitor.type] || [];
+			typeMap[visitor.type].push(visitor);
+			lastParsed[visitor.nodeId] = 0;
 		}
-		// Add the child nodes to top of the stack and populate the node's childNodes array
-		stack.unshift(...Object.values(childrenLoc));
-		node.childNodes.push(...Object.values(childrenLoc));
-
-		allNodes.push(node);
-		node.nodeId = nodeId++;
-		typeMap[node.type] = typeMap[node.type] || [];
-		typeMap[node.type].push(node);
-		if (opts.detailed) {
-			node.scope = scopes[node.scopeId] || node.parentNode?.scope;
-			node.lineage = [...node.parentNode?.lineage || []];
-			if (!node.lineage.includes(node.scope.scopeId)) {
-				node.lineage.push(node.scope.scopeId);
-			}
+		let visitorId = visitor.nodeId;
+		if(lastParsed[visitorId] < visitor.childNodes.length){
+			visitor = visitor.childNodes[lastParsed[visitorId]++];
+		}else{
+			visitor = visitor.parentNode;
+			delete lastParsed[visitorId];
 		}
-		// Avoid using a getter with a closure around source here, as the 
-		// memory requirement for a function per node is far greater than using 
-		// a string reference for sufficiently large AST Trees 
-		// (~2.4 nodes for 3 Gib).
-		if (opts.includeSrc && !node.src) 
-			node.src = rootNode.src.substring(node.start,node.end);
 	}
+
 	if (opts.detailed) {
 		const identifiers = typeMap.Identifier || [];
 		const scopeVarMaps = buildScopeVarMaps(scopes);
