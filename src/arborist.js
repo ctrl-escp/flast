@@ -108,8 +108,8 @@ class Arborist {
           const rootNodeReplacement = this.replacements.find(n => n[0].nodeId === 0);
           ++changesCounter;
           this.logger.debug('[+] Applying changes to the root node...');
-          const leadingComments = rootNode.leadingComments || [];
-          const trailingComments = rootNode.trailingComments || [];
+          const leadingComments = rootNode.body?.[0]?.leadingComments || [];
+          const trailingComments = rootNode.body?.[rootNode.body.length - 1]?.trailingComments || [];
           rootNode = rootNodeReplacement[1];
           if (leadingComments.length && rootNode.leadingComments !== leadingComments)
             Arborist.mergeComments(rootNode, {leadingComments}, 'leadingComments');
