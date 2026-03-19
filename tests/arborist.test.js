@@ -239,4 +239,15 @@ describe('Arborist edge case tests', () => {
 		arb.applyChanges();
 		assert.equal(arb.script, 'let y = 20;');
 	});
+
+  it('A node will not marked if any of their ancestors is', () => {
+    const code = 'const arr = [1, 2, 3];';
+    const arb = new Arborist(code);
+    const arrayNode = arb.ast.find((n) => n.type === 'ArrayExpression');
+    const literals = arb.ast.filter((n) => n.type === 'Literal');
+    arb.markNode(arrayNode);
+    for (const lit of literals) {arb.markNode(lit);}
+    assert.ok(arrayNode.isMarked);
+    for (const lit of literals) {assert.ok(!lit.isMarked);}
+  });
 });
