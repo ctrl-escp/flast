@@ -55,7 +55,13 @@ class Arborist {
 	 * @param {object|ASTNode} [replacementNode] If exists, replace the target node with this node.
 	 */
 	markNode(targetNode, replacementNode) {
-		if (!targetNode.isMarked) {
+    let alreadyMarked = false;
+    let currentNode = targetNode;
+    while (currentNode) {
+	  if (currentNode.isMarked) {alreadyMarked = true;}
+      currentNode = currentNode.parentNode;
+    }
+    if (alreadyMarked) {return;}
 			if (replacementNode) {  // Mark for replacement
 				this.replacements.push([targetNode, replacementNode]);
 				targetNode.isMarked = true;
@@ -65,7 +71,6 @@ class Arborist {
 				else if (!targetNode.isMarked) {
 					this.markedForDeletion.push(targetNode.nodeId);
 					targetNode.isMarked = true;
-				}
 			}
 		}
 	}
