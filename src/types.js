@@ -99,6 +99,6 @@ class ASTNode {}
 class ASTScope extends Scope {}
 
 export {
-	ASTNode,
-	ASTScope,
+  ASTNode,
+  ASTScope,
 };
