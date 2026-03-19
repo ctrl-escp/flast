@@ -27,14 +27,14 @@
   "homepage": "https://github.com/ctrl-escp/flast#readme",
   "dependencies": {
     "escodegen": "npm:@javascript-obfuscator/escodegen",
-    "eslint-scope": "^9.1.0",
-    "espree": "^10.4.0"
+    "eslint-scope": "^9.1.2",
+    "espree": "^11.2.0"
   },
   "devDependencies": {
-    "eslint": "^10.0.0",
+    "eslint": "^10.0.3",
     "@eslint/js": "^10.0.1",
-    "@eslint/eslintrc": "^3.3.3",
-    "globals": "^17.3.0",
+    "@eslint/eslintrc": "^3.3.5",
+    "globals": "^17.4.0",
     "husky": "^9.1.7"
   }
 }
