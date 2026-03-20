@@ -132,6 +132,21 @@ describe('Arborist tests', () => {
     arb.applyChanges();
     assert.equal(arb.script, expected);
   });
+  it('Verify repeated root replacements do not duplicate file header comments', () => {
+    const expected = '//comment1\nvar a = 1;';
+    let script = expected;
+
+    for (let i = 0; i < 2; i++) {
+      const arb = new Arborist(script);
+      arb.markNode(arb.ast[0], {
+        ...arb.ast[0],
+      });
+      arb.applyChanges();
+      script = arb.script;
+    }
+
+    assert.equal(script, expected);
+  });
   it.skip('FIX: Verify comments are kept when replacing a node', () => {
     const code = `
 // comment1

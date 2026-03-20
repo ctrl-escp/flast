@@ -111,10 +111,14 @@ class Arborist {
           const leadingComments = rootNode.body?.[0]?.leadingComments || [];
           const trailingComments = rootNode.body?.[rootNode.body.length - 1]?.trailingComments || [];
           rootNode = rootNodeReplacement[1];
-          if (leadingComments.length && rootNode.leadingComments !== leadingComments)
-            Arborist.mergeComments(rootNode, {leadingComments}, 'leadingComments');
-          if (trailingComments.length && rootNode.trailingComments !== trailingComments)
-            Arborist.mergeComments(rootNode, {trailingComments}, 'trailingComments');
+          if (leadingComments.length) {
+            const leadingCommentTarget = rootNode.body?.[0] || rootNode;
+            Arborist.mergeComments(leadingCommentTarget, {leadingComments}, 'leadingComments');
+          }
+          if (trailingComments.length) {
+            const trailingCommentTarget = rootNode.body?.[rootNode.body.length - 1] || rootNode;
+            Arborist.mergeComments(trailingCommentTarget, {trailingComments}, 'trailingComments');
+          }
         } else {
           for (const targetNodeId of this.markedForDeletion) {
             try {
