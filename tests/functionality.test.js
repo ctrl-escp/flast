@@ -97,6 +97,7 @@ describe('Functionality tests', () => {
       error = e.message;
     }
     assert.ok(ast.length, `Script was not parsed. Got the error "${error}"`);
+    assert.equal(ast[0].sourceType, 'script', 'Script was not reparsed in script mode');
   });
   it('Verify a script is only parsed in its selected sourceType', () => {
     const code = 'let a; delete a;';
@@ -116,6 +117,7 @@ describe('Functionality tests', () => {
     }
     assert.equal(unparsedAst.length, 0, `Script was not parsed.${unparsedError ? `Error: ${  unparsedError}` : ''}`);
     assert.ok(parsedAst.length, `Script was not parsed.${parsedError ? `Error: ${  parsedError}` : ''}`);
+    assert.equal(parsedAst[0].sourceType, 'script', 'Fallback parse did not use script sourceType');
   });
   it('Verify generateFlatAST doesn\'t throw an exception for invalid code', () => {
     const code = 'return a;';
