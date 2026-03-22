@@ -170,14 +170,8 @@ class Arborist {
                 } else if (Array.isArray(parent[targetNode.parentKey])) {
                   const idx = parent[targetNode.parentKey].indexOf(targetNode);
                   parent[targetNode.parentKey][idx] = replacementNode;
-                  const comments = (targetNode.leadingComments || []).concat(targetNode.trailingComments || []);
-                  if (idx > 0) {
-                    Arborist.mergeComments(parent[targetNode.parentKey][idx - 1], {trailingComments: comments}, 'trailingComments');
-                  } else if (parent[targetNode.parentKey].length > 1) {
-                    Arborist.mergeComments(parent[targetNode.parentKey][idx + 1], {leadingComments: comments}, 'leadingComments');
-                  } else {
-                    Arborist.mergeComments(parent, {trailingComments: comments}, 'trailingComments');
-                  }
+                  Arborist.mergeComments(replacementNode, targetNode, 'leadingComments');
+                  Arborist.mergeComments(replacementNode, targetNode, 'trailingComments');
                   ++changesCounter;
                 }
               }
@@ -205,6 +199,7 @@ class Arborist {
       }
     } catch (e) {
       this.logger.log(`[-] Unable to apply changes to AST: ${e}`);
+      changesCounter = 0;
     }
     ++this.appliedCounter;
     return changesCounter;
