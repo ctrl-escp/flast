@@ -109,6 +109,18 @@ describe('Parsing tests', () => {
     const ast = generateFlatAST(code);
     assert.notEqual(ast, [1]);
   });
+  it('Verify large flat scripts do not overflow traversal', () => {
+    const stmt = 'var x = 1;\n';
+    const code = stmt.repeat(Math.ceil((2 * 1024 * 1024) / stmt.length));
+    let ast = [];
+    let error = '';
+    try {
+      ast = generateFlatAST(code);
+    } catch (e) {
+      error = e.message;
+    }
+    assert.ok(ast.length, `Large script was not parsed.${error ? ` Error: ${error}` : ''}`);
+  });
   it('Verify all identifiers are referenced correctly', () => {
     const code = 'let a = 1; switch(a) {case 1: a;}';
     const ast = generateFlatAST(code);
