@@ -49,6 +49,36 @@ describe('Utils tests: applyIteratively', () => {
 
     assert.equal(result, expectedOutput, 'Result does not match expected output');
   });
+  it('Verify applyIteratively continues after a modifier throws', () => {
+    const code = 'const greeting = \'Hello\';';
+    const throwingModifier = function throwingModifier() {
+      throw new Error('boom');
+    };
+    const replaceLiteral = treeModifier(
+      n => n.type === 'Literal' && n.value === 'Hello',
+      (n, arb) => arb.markNode(n, {type: 'Literal', value: 'General', raw: '\'General\''}),
+      'replaceLiteral',
+    );
+
+    const result = applyIteratively(code, [throwingModifier, replaceLiteral]);
+
+    assert.equal(result, 'const greeting = \'General\';', 'Later modifiers did not run after an earlier modifier threw');
+  });
+  it('Verify applyIteratively detects a replaced Arborist via scriptHash', () => {
+    const code = 'const greeting = \'Hello\';';
+    const replaceWithNewArborist = function replaceWithNewArborist(arb) {
+      const replacement = treeModifier(
+        n => n.type === 'Literal' && n.value === 'Hello',
+        (n, nextArb) => nextArb.markNode(n, {type: 'Literal', value: 'General', raw: '\'General\''}),
+        'replaceLiteral',
+      );
+      return replacement(new arb.constructor(arb.script));
+    };
+
+    const result = applyIteratively(code, [replaceWithNewArborist], 2);
+
+    assert.equal(result, 'const greeting = \'General\';', 'Replaced Arborist instance was not applied');
+  });
 });
 describe('Utils tests: logger', () => {
   it('Verify logger sets the log level to DEBUG properly', () => {
@@ -91,5 +121,22 @@ describe('Utils tests: logger', () => {
   });
   it('Verify logger throws an error when setting an unknown log level', () => {
     assert.throws(() => logger.setLogLevel(0), Error, 'An error was not thrown when setting an unknown log level');
+  });
+  it('Verify logger suppresses lower-priority logs', () => {
+    const originalLogFunc = logger.logFunc;
+    const originalLogLevel = logger.currentLogLevel;
+    let callCount = 0;
+    logger.setLogFunc(() => {
+      callCount += 1;
+    });
+    logger.setLogLevelError();
+
+    logger.debug('hidden debug');
+    logger.log('hidden log');
+    logger.error('visible error');
+
+    assert.equal(callCount, 1, 'Logger did not suppress lower-priority calls');
+    logger.setLogFunc(originalLogFunc);
+    logger.setLogLevel(originalLogLevel);
   });
 });
