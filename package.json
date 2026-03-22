@@ -3,6 +3,7 @@
   "version": "2.2.8",
   "description": "Flatten JS AST",
   "main": "src/index.js",
+  "types": "src/types.d.ts",
   "type": "module",
   "scripts": {
     "lint": "eslint .",

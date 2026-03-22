@@ -3,14 +3,16 @@ import {analyze} from 'eslint-scope';
 import {logger} from './utils/logger.js';
 import {generate, attachComments} from 'escodegen';
 
+/** @import {ASTAllScopes, ASTNode, ASTRootNode, GenerateCodeOptions, GenerateFlatASTOptions, ParseCodeOptions, ScopeVariableMapByScopeId} from './types.d.ts' */
+
 const ecmaVersion = 'latest';
 const currentYear = (new Date()).getFullYear();
 const sourceType = 'module';
 
 /**
  * @param {string} inputCode
- * @param {object} opts Additional options for espree
- * @return {ASTNode} The root of the AST
+ * @param {ParseCodeOptions} [opts] Additional options for espree
+ * @return {ASTRootNode} The root of the AST
  */
 function parseCode(inputCode, opts = {}) {
   const rootNode = parse(inputCode, {ecmaVersion, comment: true, range: true, ...opts});
@@ -40,7 +42,7 @@ const generateFlatASTDefaultOptions = {
 
 /**
  * @param {string} inputCode
- * @param {object} opts Optional changes to behavior. See generateFlatASTDefaultOptions for available options.
+ * @param {GenerateFlatASTOptions} [opts] Optional changes to behavior. See generateFlatASTDefaultOptions for available options.
  * @return {ASTNode[]} An array of flattened AST
  */
 function generateFlatAST(inputCode, opts = {}) {
@@ -68,8 +70,8 @@ const generateCodeDefaultOptions = {
 
 /**
  * @param {ASTNode} rootNode
- * @param {object} opts Optional changes to behavior. See generateCodeDefaultOptions for available options.
-*        								All escodegen options are supported, including sourceMap, sourceMapWithCode, etc.
+ * @param {GenerateCodeOptions} [opts] Optional changes to behavior. See generateCodeDefaultOptions for available options.
+ *        								             All escodegen options are supported, including sourceMap, sourceMapWithCode, etc.
  * @return {string} Code generated from AST
  */
 function generateCode(rootNode, opts = {}) {
@@ -78,13 +80,13 @@ function generateCode(rootNode, opts = {}) {
 
 /**
  * @param {string} inputCode
- * @param {object} [opts]
- * @return {ASTNode}
+ * @param {GenerateFlatASTOptions} [opts]
+ * @return {ASTRootNode|null}
  */
 function generateRootNode(inputCode, opts = {}) {
   opts = {...generateFlatASTDefaultOptions, ...opts};
   const parseOpts = opts.parseOpts || {};
-  let rootNode;
+  let rootNode = null;
   try {
     rootNode = parseCode(inputCode, parseOpts);
     if (opts.includeSrc) rootNode.src = inputCode;
@@ -105,9 +107,9 @@ function generateRootNode(inputCode, opts = {}) {
 }
 
 /**
- * @param {object} opts
- * @param {ASTNode} rootNode
- * @param {{number: ASTScope}} scopes
+ * @param {GenerateFlatASTOptions} opts
+ * @param {ASTRootNode} rootNode
+ * @param {ASTAllScopes} scopes
  * @param {number} nodeId
  * @param {ASTNode} node
  * @return {ASTNode}
@@ -156,13 +158,13 @@ function parseNode (opts, rootNode, scopes, nodeId, node) {
   // a string reference for sufficiently large AST Trees
   // (~2.4 nodes for 3 Gib).
   if (opts.includeSrc && !node.src)
-    node.src = rootNode.src.substring(node.start,node.end);
+    node.src = rootNode.src.substring(node.start, node.end);
   return node;
 }
 
 /**
- * @param rootNode
- * @param opts
+ * @param {ASTRootNode} rootNode
+ * @param {GenerateFlatASTOptions} [opts]
  * @return {ASTNode[]}
  */
 function extractNodesFromRoot(rootNode, opts) {
@@ -212,8 +214,8 @@ function extractNodesFromRoot(rootNode, opts) {
 
 /**
  * Precompute a map of variable names to declarations for each scope for fast lookup.
- * @param {object} scopes
- * @return {Map} Map of scopeId to { [name]: variable }
+ * @param {ASTAllScopes} scopes
+ * @return {ScopeVariableMapByScopeId} Map of scopeId to { [name]: variable }
  */
 function buildScopeVarMaps(scopes) {
   const scopeVarMaps = {};
@@ -231,7 +233,7 @@ function buildScopeVarMaps(scopes) {
 
 /**
  * @param {ASTNode} node
- * @param {object} scopeVarMaps
+ * @param {ScopeVariableMapByScopeId} scopeVarMaps
  */
 function mapIdentifierRelations(node, scopeVarMaps) {
   // Track references and declarations
@@ -291,8 +293,8 @@ function maxSharedLength(targetArr, containedArr) {
 }
 
 /**
- * @param {ASTNode} rootNode
- * @return {{number: ASTScope}}
+ * @param {ASTRootNode} rootNode
+ * @return {ASTAllScopes}
  */
 function getAllScopes(rootNode) {
   // noinspection JSCheckFunctionSignatures

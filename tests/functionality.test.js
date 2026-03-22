@@ -28,10 +28,9 @@ describe('Functionality tests', () => {
   it('Verify the expected functions and classes can be imported', async () => {
     const availableImports = [
       'Arborist',
-      'ASTNode',
-      'ASTScope',
       'generateCode',
       'generateFlatAST',
+      'generateRootNode',
       'parseCode',
       'applyIteratively',
       'logger',
@@ -41,6 +40,8 @@ describe('Functionality tests', () => {
     for (const importName of availableImports) {
       assert.ok(importName in flast, `Failed to import "${importName}"`);
     }
+    assert.ok(!('ASTNode' in flast), 'ASTNode should not be a runtime export');
+    assert.ok(!('ASTScope' in flast), 'ASTScope should not be a runtime export');
   });
   it('Verify the code breakdown generates the expected nodes by checking the number of nodes for each expected type', () => {
     const code = 'console.log(\'hello\' + \' \' + \'there\');';
@@ -126,5 +127,14 @@ describe('Functionality tests', () => {
       result = e.message;
     }
     assert.deepStrictEqual(result, expectedResult);
+  });
+  it('Verify generateRootNode returns null for invalid code', async () => {
+    const {generateRootNode} = await import(path.resolve(`${__dirname}/../src/index.js`));
+    const result = generateRootNode('return a;', {alternateSourceTypeOnFailure: false});
+    assert.equal(result, null);
+  });
+  it('Verify package.json publishes a declaration entrypoint', async () => {
+    const pkg = await import(path.resolve(`${__dirname}/../package.json`), {with: {type: 'json'}});
+    assert.equal(pkg.default.types, 'src/types.d.ts');
   });
 });

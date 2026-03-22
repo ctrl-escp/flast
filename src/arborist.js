@@ -1,6 +1,8 @@
 import {logger} from './utils/logger.js';
 import {generateCode, generateFlatAST} from './flast.js';
 
+/** @import {ASTNode} from './types.d.ts' */
+
 /**
  * Arborist allows marking nodes for deletion or replacement, and then applying all changes in a single pass.
  * Note: Marking a node with markNode() only sets a flag; the AST is not officially changed until applyChanges() is called.
