@@ -73,13 +73,16 @@ describe('Parsing tests', () => {
     const result = ast[0].typeMap;
     assert.deepEqual(result, expected);
   });
-  it('Verify node relations are parsed correctly', () => {
+  it('Verify node relations include stable parent-child links and traversal order', () => {
     const code = 'for (var i = 0; i < 10; i++);\nfor (var i = 0; i < 10; i++);';
-    try {
-      generateFlatAST(code);
-    } catch (e) {
-      assert.fail(`Parsing failed: ${e.message}`);
-    }
+    const ast = generateFlatAST(code);
+    const [firstLoop, secondLoop] = ast.filter(n => n.type === 'ForStatement');
+    assert.equal(firstLoop.parentNode, ast[0], 'First loop parent node is incorrect');
+    assert.equal(secondLoop.parentNode, ast[0], 'Second loop parent node is incorrect');
+    assert.equal(firstLoop.parentKey, 'body', 'First loop parent key is incorrect');
+    assert.equal(secondLoop.parentKey, 'body', 'Second loop parent key is incorrect');
+    assert.deepEqual(ast[0].body, [firstLoop, secondLoop], 'Program body order does not match traversal order');
+    assert.deepEqual(ast[0].childNodes.slice(0, 2), [firstLoop, secondLoop], 'Program childNodes order is unstable');
   });
   it('Verify the module scope is ignored', () => {
     const code = 'function a() {return [1];}\nconst b = a();';
@@ -104,10 +107,24 @@ describe('Parsing tests', () => {
       assert.deepEqual(n.lineage, extractedLineage);
     });
   });
-  it('Verify null childNodes are correctly parsed', () => {
+  it('Verify sparse array holes do not create bogus child nodes', () => {
     const code = '[,,,].join(\'-\');';
     const ast = generateFlatAST(code);
-    assert.notEqual(ast, [1]);
+    const arrayNode = ast.find(n => n.type === 'ArrayExpression');
+    assert.ok(arrayNode, 'ArrayExpression was not parsed');
+    assert.equal(arrayNode.elements.length, 3, 'Sparse array hole count changed');
+    assert.equal(arrayNode.elements.filter(Boolean).length, 0, 'Sparse array holes were materialized as child nodes');
+    assert.deepEqual(arrayNode.childNodes, [], 'Sparse array holes should not become childNodes');
+    assert.equal(ast.length, 7, 'Unexpected node count for sparse array traversal');
+    assert.deepEqual(ast.map(n => n.type), [
+      'Program',
+      'ExpressionStatement',
+      'CallExpression',
+      'MemberExpression',
+      'ArrayExpression',
+      'Identifier',
+      'Literal',
+    ], 'Unexpected traversal output for sparse array holes');
   });
   it('Verify large flat scripts do not overflow traversal', () => {
     const stmt = 'var x = 1;\n';
