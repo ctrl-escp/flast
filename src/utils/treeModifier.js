@@ -1,6 +1,7 @@
 /**
  * Boilerplate for filter functions that identify the desired structure and a modifier function that modifies the tree.
  * An optional name for the function can be provided for better logging.
+ * @deprecated Prefer targeted iteration over `arb.ast[0].typeMap.<NodeType>` and keep full-AST scans as a legacy fallback only.
  * @param {Function} filterFunc
  * @param {Function} modFunc
  * @param {string} [funcName]

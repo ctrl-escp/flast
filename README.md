@@ -60,7 +60,7 @@ Each node in the flat AST includes:
 ### Utilities
 - **applyIteratively:** Apply a series of transformation functions (using Arborist) to the AST/code, iterating until no further changes are made. Automatically reverts changes that break the code.
 - **logger:** Simple log utility that can be controlled downstream and used for debugging or custom output.
-- **treeModifier:** (Deprecated) Simple wrapper for AST iteration.
+- **treeModifier:** Deprecated legacy wrapper for full-AST iteration. Prefer targeted iteration over `ast[0].typeMap` instead.
 ---
 
 ## Usage Examples
@@ -77,7 +77,7 @@ Each node in the flat AST includes:
 >   // ... process n ...
 > }
 > ```
-> Only iterate over the entire AST as a last resort.
+> Only iterate over the entire AST as a last resort. `treeModifier` is kept for backward compatibility in `2.x` and is planned for removal in `3.0.0`.
 
 ### Basic Example
 ```js
