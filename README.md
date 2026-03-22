@@ -60,7 +60,6 @@ Each node in the flat AST includes:
 ### Utilities
 - **applyIteratively:** Apply a series of transformation functions (using Arborist) to the AST/code, iterating until no further changes are made. Automatically reverts changes that break the code.
 - **logger:** Simple log utility that can be controlled downstream and used for debugging or custom output.
-- **treeModifier:** (Deprecated) Simple wrapper for AST iteration.
 ---
 
 ## Usage Examples

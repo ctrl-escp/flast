@@ -1,27 +1,20 @@
 import assert from 'node:assert';
 import {describe, it} from 'node:test';
-import {treeModifier, applyIteratively, logger} from '../src/index.js';
-
-describe('Utils tests: treeModifier', () => {
-  it('Verify treeModifier sets a generic function name', () => {
-    const expectedFuncName = 'func';
-    const generatedFunc = treeModifier(() => {}, () => {});
-    assert.equal(generatedFunc.name, expectedFuncName, 'The default name of the generated function does not match');
-  });
-  it('Verify treeModifier sets the function\'s name properly', () => {
-    const expectedFuncName = 'expectedFuncName';
-    const generatedFunc = treeModifier(() => {}, () => {}, expectedFuncName);
-    assert.equal(generatedFunc.name, expectedFuncName, 'The name of the generated function does not match');
-  });
-});
+import {applyIteratively, logger} from '../src/index.js';
 describe('Utils tests: applyIteratively', () => {
   it('Verify applyIteratively cannot remove the root node without replacing it', () => {
     const code = 'a';
     const expectedOutput = code;
-    const f = n => n.type === 'Program';
-    const m = (n, arb) => arb.markNode(n);
-    const generatedFunc = treeModifier(f, m);
-    const result = applyIteratively(code, [generatedFunc]);
+    const removeRoot = function removeRoot(arb) {
+      for (let i = 0; i < arb.ast.length; i++) {
+        const n = arb.ast[i];
+        if (n.type === 'Program') {
+          arb.markNode(n);
+        }
+      }
+      return arb;
+    };
+    const result = applyIteratively(code, [removeRoot]);
 
     assert.equal(result, expectedOutput, 'Result does not match expected output');
   });
@@ -39,13 +32,19 @@ describe('Utils tests: applyIteratively', () => {
       there: 'Kenobi',
     };
     let result = code;
-    const f = n => n.type === 'Literal' && replacements[n.value];
-    const m = (n, arb) => arb.markNode(n, {
-      type: 'Literal',
-      value: replacements[n.value],
-    });
-    const generatedFunc = treeModifier(f, m);
-    result = applyIteratively(result, [generatedFunc]);
+    const replaceLiterals = function replaceLiterals(arb) {
+      for (let i = 0; i < arb.ast.length; i++) {
+        const n = arb.ast[i];
+        if (n.type === 'Literal' && replacements[n.value]) {
+          arb.markNode(n, {
+            type: 'Literal',
+            value: replacements[n.value],
+          });
+        }
+      }
+      return arb;
+    };
+    result = applyIteratively(result, [replaceLiterals]);
 
     assert.equal(result, expectedOutput, 'Result does not match expected output');
   });
@@ -54,11 +53,15 @@ describe('Utils tests: applyIteratively', () => {
     const throwingModifier = function throwingModifier() {
       throw new Error('boom');
     };
-    const replaceLiteral = treeModifier(
-      n => n.type === 'Literal' && n.value === 'Hello',
-      (n, arb) => arb.markNode(n, {type: 'Literal', value: 'General', raw: '\'General\''}),
-      'replaceLiteral',
-    );
+    const replaceLiteral = function replaceLiteral(arb) {
+      for (let i = 0; i < arb.ast.length; i++) {
+        const n = arb.ast[i];
+        if (n.type === 'Literal' && n.value === 'Hello') {
+          arb.markNode(n, {type: 'Literal', value: 'General', raw: '\'General\''});
+        }
+      }
+      return arb;
+    };
 
     const result = applyIteratively(code, [throwingModifier, replaceLiteral]);
 
@@ -67,12 +70,14 @@ describe('Utils tests: applyIteratively', () => {
   it('Verify applyIteratively detects a replaced Arborist via scriptHash', () => {
     const code = 'const greeting = \'Hello\';';
     const replaceWithNewArborist = function replaceWithNewArborist(arb) {
-      const replacement = treeModifier(
-        n => n.type === 'Literal' && n.value === 'Hello',
-        (n, nextArb) => nextArb.markNode(n, {type: 'Literal', value: 'General', raw: '\'General\''}),
-        'replaceLiteral',
-      );
-      return replacement(new arb.constructor(arb.script));
+      const nextArb = new arb.constructor(arb.script);
+      for (let i = 0; i < nextArb.ast.length; i++) {
+        const n = nextArb.ast[i];
+        if (n.type === 'Literal' && n.value === 'Hello') {
+          nextArb.markNode(n, {type: 'Literal', value: 'General', raw: '\'General\''});
+        }
+      }
+      return nextArb;
     };
 
     const result = applyIteratively(code, [replaceWithNewArborist], 2);

@@ -186,11 +186,6 @@ export function extractNodesFromRoot(rootNode: ASTRootNode, opts?: GenerateFlatA
 export function mapIdentifierRelations(node: ASTNode, scopeVarMaps: ScopeVariableMapByScopeId): void;
 
 export function applyIteratively(script: string, funcs: Array<(arb: Arborist) => Arborist>, maxIterations?: number): string;
-export function treeModifier(
-  filterFunc: (node: ASTNode, arb: Arborist) => boolean,
-  modFunc: (node: ASTNode, arb: Arborist) => void,
-  funcName?: string
-): (arb: Arborist) => Arborist;
 
 export const logger: {
   currentLogLevel: number;

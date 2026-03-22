@@ -34,7 +34,6 @@ describe('Functionality tests', () => {
       'parseCode',
       'applyIteratively',
       'logger',
-      'treeModifier',
     ];
     const flast = await import(path.resolve(`${__dirname  }/../src/index.js`));
     for (const importName of availableImports) {
