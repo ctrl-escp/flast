@@ -147,7 +147,7 @@ describe('Arborist tests', () => {
 
     assert.equal(script, expected);
   });
-  it.skip('FIX: Verify comments are kept when replacing a node', () => {
+  it('Verify comments are kept when replacing a node', () => {
     const code = `
 // comment1
 const a = 1;
@@ -174,6 +174,22 @@ const c = 3;`;
 });
 
 describe('Arborist edge case tests', () => {
+  it('mergeComments appends onto existing comment arrays', () => {
+    const target = {
+      leadingComments: [{type: 'Line', value: 'existing'}],
+    };
+    const source = {
+      leadingComments: [{type: 'Line', value: 'incoming'}],
+    };
+
+    Arborist.mergeComments(target, source, 'leadingComments');
+
+    assert.deepEqual(target.leadingComments, [
+      {type: 'Line', value: 'existing'},
+      {type: 'Line', value: 'incoming'},
+    ]);
+  });
+
   it('Preserves comments when replacing a non-root node', () => {
     const code = 'const a = 1; // trailing\nconst b = 2;';
     const expected = 'const a = 1;\n// trailing\nconst b = 3;';
@@ -181,6 +197,22 @@ describe('Arborist edge case tests', () => {
     const bDecl = arb.ast.find(n => n.type === 'VariableDeclarator' && n.id.name === 'b');
     arb.markNode(bDecl.init, {type: 'Literal', value: 3, raw: '3'});
     arb.applyChanges();
+    assert.equal(arb.script, expected);
+  });
+
+  it('Preserves comments on replaced array siblings', () => {
+    const code = '// keep-a\nconst a = 1;\n// keep-b\nconst b = 2;';
+    const expected = '// keep-a\nvar a = 1;\n// keep-b\nvar b = 2;';
+    const arb = new Arborist(code);
+    for (const node of arb.ast.filter(n => n.type === 'VariableDeclaration')) {
+      arb.markNode(node, {
+        ...node,
+        kind: 'var',
+      });
+    }
+
+    arb.applyChanges();
+
     assert.equal(arb.script, expected);
   });
 
@@ -239,6 +271,40 @@ describe('Arborist edge case tests', () => {
     arb.markNode(literal); // Should not delete after replacement
     arb.applyChanges();
     assert.equal(arb.script, expected);
+  });
+
+  it('Replacement failures are isolated and later replacements still apply', () => {
+    const code = 'let a = 1, b = 2;';
+    const arb = new Arborist(code);
+    const aLiteral = arb.ast.find(n => n.type === 'Literal' && n.value === 1);
+    const bLiteral = arb.ast.find(n => n.type === 'Literal' && n.value === 2);
+    arb.markNode(aLiteral, {type: 'Literal', value: 10, raw: '10'});
+    arb.markNode(bLiteral, {type: 'Literal', value: 20, raw: '20'});
+    aLiteral.parentNode = null;
+
+    const numberOfChangesMade = arb.applyChanges();
+
+    assert.equal(numberOfChangesMade, 1, 'A failed replacement should not count as applied');
+    assert.equal(arb.script, 'let a = 1, b = 20;', 'A failed replacement prevented later valid replacements');
+  });
+
+  it('applyChanges returns 0 when an outer failure occurs', () => {
+    const arb = new Arborist('const a = 1;');
+    const originalScript = arb.script;
+    const originalAst = arb.ast;
+    const throwingReplacement = {};
+    Object.defineProperty(throwingReplacement, 'body', {
+      get() {
+        throw new Error('boom');
+      },
+    });
+    arb.markNode(arb.ast[0], throwingReplacement);
+
+    const numberOfChangesMade = arb.applyChanges();
+
+    assert.equal(numberOfChangesMade, 0, 'Outer applyChanges failures should be reported as 0 changes');
+    assert.equal(arb.script, originalScript, 'Script changed despite outer applyChanges failure');
+    assert.equal(arb.ast, originalAst, 'AST changed despite outer applyChanges failure');
   });
 
   it('AST is still valid and mutable after applyChanges', () => {
