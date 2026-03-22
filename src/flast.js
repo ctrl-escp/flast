@@ -113,8 +113,7 @@ function generateRootNode(inputCode, opts = {}) {
  * @return {ASTNode}
  */
 function parseNode (opts, rootNode, scopes, nodeId, node) {
-	if (node.nodeId) return;
-	node.childNodes = node.childNodes || [];
+	if (node.nodeId !== undefined) return node;
 	const childrenLoc = {}; // Store the location of child nodes to sort them by order
 	node.parentKey = node.parentKey || '';	// Make sure parentKey exists
 	// Iterate over all keys of the node to find child nodes
@@ -141,8 +140,8 @@ function parseNode (opts, rootNode, scopes, nodeId, node) {
 			}
 		}
 	}
-	// Add the child nodes to top of the stack and populate the node's childNodes array
-	node.childNodes.push(...Object.values(childrenLoc));
+	// Materialize children once to avoid spreading very large arrays into a call frame.
+	node.childNodes = Object.values(childrenLoc);
 
 	node.nodeId = nodeId;
 	if (opts.detailed) {
