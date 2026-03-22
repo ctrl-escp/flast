@@ -19,7 +19,6 @@ export default [
       'object-curly-spacing': ['error', 'never'],
       'array-bracket-spacing': ['error', 'never'],
       'no-trailing-spaces': 'error',
-      'eol-last': ['error', 'always'],
       'no-multiple-empty-lines': ['error', {max: 1, maxEOF: 0}],
 
       /*
