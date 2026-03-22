@@ -76,6 +76,19 @@ describe('Utils tests: logger', () => {
     logger.setLogFunc(expectedLogFunc);
     assert.equal(logger.logFunc, expectedLogFunc, 'The log function was not set properly');
   });
+  it('Verify logger forwards multiple arguments unchanged to the configured log function', () => {
+    const originalLogFunc = logger.logFunc;
+    const originalLogLevel = logger.currentLogLevel;
+    let receivedArgs = null;
+    logger.setLogFunc((...args) => {
+      receivedArgs = args;
+    });
+    logger.setLogLevelDebug();
+    logger.debug('%s %d', 'value', 7);
+    assert.deepEqual(receivedArgs, ['%s %d', 'value', 7], 'Logger did not forward arguments unchanged');
+    logger.setLogFunc(originalLogFunc);
+    logger.setLogLevel(originalLogLevel);
+  });
   it('Verify logger throws an error when setting an unknown log level', () => {
     assert.throws(() => logger.setLogLevel(0), Error, 'An error was not thrown when setting an unknown log level');
   });

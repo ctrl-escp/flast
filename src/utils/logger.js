@@ -7,11 +7,11 @@ const logLevels = {
 
 /**
  * @param {number} logLevel
- * @returns {function(*): void|undefined}
+ * @returns {(...args: unknown[]) => void|undefined}
  */
 function createLoggerForLevel(logLevel) {
   if (!Object.values(logLevels).includes(logLevel)) throw new Error(`Unknown log level ${logLevel}.`);
-  return msg => logLevel >= logger.currentLogLevel ? logger.logFunc(msg) : undefined;
+  return (...args) => logLevel >= logger.currentLogLevel ? logger.logFunc(...args) : undefined;
 }
 
 const logger = {
@@ -36,8 +36,8 @@ const logger = {
   setLogLevelLog() {this.setLogLevel(this.logLevels.LOG);},
   setLogLevelError() {this.setLogLevel(this.logLevels.ERROR);},
 
-  setLogFunc(newLogfunc) {
-    this.logFunc = newLogfunc;
+  setLogFunc(newLogFunc) {
+    this.logFunc = newLogFunc;
   },
 };
 
