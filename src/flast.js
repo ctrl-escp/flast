@@ -22,7 +22,7 @@ function parseCode(inputCode, opts = {}) {
 
 const excludedParentKeys = [
   'type', 'start', 'end', 'range', 'sourceType', 'comments', 'srcClosure', 'nodeId', 'leadingComments', 'trailingComments',
-  'childNodes', 'parentNode', 'parentKey', 'scope', 'typeMap', 'lineage', 'allScopes', 'tokens',
+  'childNodes', 'parentNode', 'parentKey', 'scope', 'typeMap', 'lineage', 'ancestry', 'allScopes', 'tokens',
 ];
 
 const generateFlatASTDefaultOptions = {
@@ -147,6 +147,8 @@ function parseNode (opts, rootNode, scopes, nodeId, node) {
 
   node.nodeId = nodeId;
   if (opts.detailed) {
+    node.ancestry = [...node.parentNode?.ancestry || []];
+    if (node.parentNode) node.ancestry.push(node.parentNode.nodeId);
     node.scope = scopes[node.scopeId] || node.parentNode?.scope;
     node.lineage = [...node.parentNode?.lineage || []];
     if (!node.lineage.includes(node.scope.scopeId)) {
@@ -169,7 +171,9 @@ function parseNode (opts, rootNode, scopes, nodeId, node) {
  */
 function extractNodesFromRoot(rootNode, opts) {
   opts = {...generateFlatASTDefaultOptions, ...opts};
-  const typeMap = {};
+  const typeMap = {
+    typeList: [],   // A quick way to get all the unique types of nodes that were parsed
+  };
   const allNodes = [];
   const scopes = opts.detailed ? getAllScopes(rootNode) : {};
 
@@ -179,7 +183,10 @@ function extractNodesFromRoot(rootNode, opts) {
   while (visitor) {
     if(!visitor.childNodes){
       allNodes.push(parseNode(opts, rootNode, scopes, nodeId++, visitor));
-      typeMap[visitor.type] = typeMap[visitor.type] || [];
+      if (!typeMap[visitor.type]) {
+        typeMap[visitor.type] = [];
+        typeMap.typeList.push(visitor.type);
+      }
       typeMap[visitor.type].push(visitor);
       lastParsed[visitor.nodeId] = 0;
     }

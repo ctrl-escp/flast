@@ -46,7 +46,10 @@ export interface ASTScope {
   [key: string]: unknown;
 }
 
-export type ASTTypeMap = Record<string, ASTNode[]>;
+export interface ASTTypeMap {
+  typeList: string[];
+  [key: string]: ASTNode[] | string[];
+}
 export type ASTAllScopes = Record<number, ASTScope>;
 export type ScopeVariableMap = Record<string, unknown>;
 export type ScopeVariableMapByScopeId = Record<number, ScopeVariableMap>;
@@ -66,6 +69,7 @@ export interface ASTNode {
   type: string;
   alternate?: ASTNode | null;
   allScopes?: ASTAllScopes;
+  ancestry?: number[];
   argument?: ASTNode | null;
   arguments?: ASTNode[];
   async?: boolean;
@@ -174,6 +178,8 @@ export class Arborist {
   _getCorrectTargetForDeletion(startNode: ASTNode): ASTNode;
   getNumberOfChanges(): number;
   markNode(targetNode: ASTNode, replacementNode?: ASTNode | object): void;
+  replaceNode(targetNode: ASTNode, replacementNode: ASTNode | object): void;
+  deleteNode(targetNode: ASTNode): void;
   static mergeComments(target: ASTNode | object, source: ASTNode, which: 'leadingComments' | 'trailingComments'): void;
   applyChanges(): number;
 }

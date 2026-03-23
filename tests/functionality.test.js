@@ -71,7 +71,7 @@ describe('Functionality tests', () => {
     const code = 'var a = [1]; a[0];';
     const noDetailsAst = generateFlatAST(code, {detailed: false});
     const [noDetailsVarDec, noDetailsVarRef] = noDetailsAst.filter(n => n.type === 'Identifier');
-    assert.equal(noDetailsVarDec.references || noDetailsVarRef.declNode || noDetailsVarRef.scope, undefined,
+    assert.equal(noDetailsVarDec.references || noDetailsVarRef.declNode || noDetailsVarRef.scope || noDetailsVarRef.ancestry, undefined,
       'Flat AST generated with details despite \'detailed\' option set to false.');
 
     const noSrcAst = generateFlatAST(code, {includeSrc: false});
@@ -80,8 +80,9 @@ describe('Functionality tests', () => {
     const detailedAst = generateFlatAST(code, {detailed: true});
     const [detailedVarDec, detailedVarRef] = detailedAst.filter(n => n.type === 'Identifier');
     assert.ok(detailedVarDec.parentNode && detailedVarDec.childNodes && detailedVarDec.references &&
-				detailedVarRef.declNode && detailedVarRef.nodeId && detailedVarRef.scope && detailedVarRef.src,
+				detailedVarRef.declNode && detailedVarRef.nodeId && detailedVarRef.scope && detailedVarRef.src && detailedVarRef.ancestry,
     'Flat AST missing details despite \'detailed\' option set to true.');
+    assert.deepEqual(detailedAst[0].ancestry, [], 'Root node ancestry should be empty in detailed mode.');
 
     const detailedNoSrcAst = generateFlatAST(code, {detailed: true, includeSrc: false});
     assert.equal(detailedNoSrcAst[0].src, undefined, 'Flat AST includes details despite \'detailed\' option set to true and \'includeSrc\' option set to false.');
