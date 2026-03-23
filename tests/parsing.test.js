@@ -71,7 +71,27 @@ describe('Parsing tests', () => {
       PrivateIdentifier: [ast[8]],
     };
     const result = ast[0].typeMap;
-    assert.deepEqual(result, expected);
+    const resultEntries = Object.entries(result)
+      .filter(([type, nodes]) => type !== 'typeList' && Array.isArray(nodes));
+    assert.deepEqual(Object.fromEntries(resultEntries), expected);
+  });
+  it('Verify the type list contains all parsed node types without duplicates', () => {
+    const code = `class a {
+  static b = 1;
+  #c = 2;
+}`;
+    const ast = generateFlatAST(code);
+    const expectedTypes = [
+      'Program',
+      'ClassDeclaration',
+      'Identifier',
+      'ClassBody',
+      'PropertyDefinition',
+      'Literal',
+      'PrivateIdentifier',
+    ];
+    assert.deepEqual(ast[0].typeMap.typeList, expectedTypes);
+    assert.equal(ast[0].typeMap.typeList.length, new Set(ast[0].typeMap.typeList).size);
   });
   it('Verify node relations include stable parent-child links and traversal order', () => {
     const code = 'for (var i = 0; i < 10; i++);\nfor (var i = 0; i < 10; i++);';
@@ -106,6 +126,28 @@ describe('Parsing tests', () => {
       const extractedLineage = extractLineage(n);
       assert.deepEqual(n.lineage, extractedLineage);
     });
+  });
+  it('Verify the ancestry is correct', () => {
+    const code = '(function() {var a; if (true) { function b() {var c; c;} } a;})()';
+    const ast = generateFlatAST(code);
+    function extractAncestry(node) {
+      const ancestry = [];
+      let currentNode = node.parentNode;
+      while (currentNode) {
+        ancestry.unshift(currentNode.nodeId);
+        currentNode = currentNode.parentNode;
+      }
+      return ancestry;
+    }
+    ast.forEach(node => {
+      assert.deepEqual(node.ancestry, extractAncestry(node), `Unexpected ancestry for node #${node.nodeId}`);
+    });
+
+    const programNode = ast[0];
+    const nestedReference = ast.find(n => n.type === 'Identifier' && n.name === 'c' && n.declNode);
+    const topLevelReference = ast.filter(n => n.type === 'Identifier' && n.name === 'a' && n.declNode).slice(-1)[0];
+    assert.ok(nestedReference.ancestry.includes(programNode.nodeId), 'Nested node should include the Program node in its ancestry.');
+    assert.ok(!topLevelReference.ancestry.includes(nestedReference.parentNode.nodeId), 'Sibling branch should not include an unrelated ancestor nodeId.');
   });
   it('Verify sparse array holes do not create bogus child nodes', () => {
     const code = '[,,,].join(\'-\');';

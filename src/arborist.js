@@ -5,9 +5,9 @@ import {generateCode, generateFlatAST} from './flast.js';
 
 /**
  * Arborist allows marking nodes for deletion or replacement, and then applying all changes in a single pass.
- * Note: Marking a node with markNode() only sets a flag; the AST is not officially changed until applyChanges() is called.
+ * Note: Calling markNode(), replaceNode(), or deleteNode() only queues a change; the AST is not officially changed until applyChanges() is called.
  */
-class Arborist {
+export class Arborist {
   /**
 	 * @param {string|ASTNode[]} scriptOrFlatAstArr - The target script or a flat AST array.
 	 */
@@ -75,6 +75,25 @@ class Arborist {
         targetNode.isMarked = true;
       }
     }
+  }
+
+  /**
+	 * Queue a node replacement. This is equivalent to markNode(targetNode, replacementNode),
+	 * but is clearer at the call site when you are only replacing nodes.
+	 * @param {ASTNode} targetNode The existing node to replace.
+	 * @param {object|ASTNode} replacementNode The node that should replace the target.
+	 */
+  replaceNode(targetNode, replacementNode) {
+    return this.markNode(targetNode, replacementNode);
+  }
+
+  /**
+	 * Queue a node deletion. This is equivalent to markNode(targetNode),
+	 * but is clearer at the call site when you are only deleting nodes.
+	 * @param {ASTNode} targetNode The node to delete.
+	 */
+  deleteNode(targetNode) {
+    return this.markNode(targetNode);
   }
 
   /**
@@ -205,7 +224,3 @@ class Arborist {
     return changesCounter;
   }
 }
-
-export {
-  Arborist,
-};
