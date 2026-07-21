@@ -175,7 +175,7 @@ Every successful Arborist replacement updates `arb.script`, regardless of rebuil
 
 #### `applyChanges()`
 - Applies queued replacements/deletions
-- Groups large sibling batches and ordered adjacent replacement runs by their parent array
+- Groups large sibling batches and ordered adjacent replacement/deletion runs by their parent array
 - Regenerates code
 - Reparses the result
 - Reverts if the generated code is invalid

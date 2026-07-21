@@ -32,7 +32,7 @@ import {generateCode, generateFlatAST} from './flast.js';
 const batchedMutationMinimum = 128;
 // Below the large-batch cutoff, enough adjacent targets must share the scan
 // before temporary index bookkeeping reliably repays its fixed cost.
-const adjacentReplacementMinimum = 16;
+const adjacentMutationMinimum = 16;
 const deletedArraySlot = Symbol('deletedArraySlot');
 const scriptParseOptions = {
   alternateSourceTypeOnFailure: false,
@@ -60,7 +60,23 @@ function rebuildFlatAst(script, sourceType, options) {
 }
 
 /**
- * Build per-container lookup state for large sibling-deletion batches.
+ * Index targets queued in the same order as one contiguous child-array run.
+ * @param {Array<ASTNode|null>} container Parent child-node array.
+ * @param {Map<ASTNode, number>} indexes Ordered targets mapped to their indexes.
+ * @return {boolean} Whether every target was found in one forward-adjacent run.
+ */
+function indexOrderedAdjacentTargets(container, indexes) {
+  let expectedIndex = -1;
+  for (const targetNode of indexes.keys()) {
+    if (expectedIndex === -1) expectedIndex = container.indexOf(targetNode);
+    if (expectedIndex === -1 || container[expectedIndex] !== targetNode) return false;
+    indexes.set(targetNode, expectedIndex++);
+  }
+  return true;
+}
+
+/**
+ * Build per-container lookup state for large or ordered-adjacent sibling deletions.
  * @param {ASTNode[]} ast Current flat AST.
  * @param {number[]} nodeIds IDs queued for deletion.
  * @return {Map<Array<ASTNode|null>, BatchedDeletionState>} Batched deletion state keyed by parent container.
@@ -79,17 +95,22 @@ function buildBatchedDeletionStates(ast, nodeIds) {
 
   const states = new Map();
   for (const [container, indexes] of groupedTargets) {
-    // Small batches are cheaper with indexOf/splice; the auxiliary maps only
-    // repay their allocation cost when many siblings share one container.
-    if (indexes.size < batchedMutationMinimum) continue;
-    for (let i = 0; i < container.length; i++) {
-      if (indexes.has(container[i])) indexes.set(container[i], i);
-    }
+    if (indexes.size < adjacentMutationMinimum) continue;
     let needsCommentNeighbors = false;
     for (const node of indexes.keys()) {
       if (node.leadingComments?.length || node.trailingComments?.length) {
         needsCommentNeighbors = true;
         break;
+      }
+    }
+    if (indexes.size < batchedMutationMinimum) {
+      // Medium comment-free runs can leave sentinels and compact once without
+      // allocating full sibling-neighbor tables. Scattered or comment-bearing
+      // edits retain splice semantics until their batch is large enough.
+      if (needsCommentNeighbors || !indexOrderedAdjacentTargets(container, indexes)) continue;
+    } else {
+      for (let i = 0; i < container.length; i++) {
+        if (indexes.has(container[i])) indexes.set(container[i], i);
       }
     }
     let previous;
@@ -128,7 +149,7 @@ function compactDeletedSlots(container) {
 }
 
 /**
- * Index targets in large sibling-replacement batches.
+ * Index targets in large or ordered-adjacent sibling-replacement batches.
  * @param {Array<[ASTNode, ASTNode|object]>} replacements Queued replacements.
  * @return {Map<Array<ASTNode|null>, Map<ASTNode, number>>} Target indexes keyed by parent container.
  */
@@ -144,25 +165,14 @@ function buildBatchedReplacementIndexes(replacements) {
   }
 
   for (const [container, indexes] of groupedTargets) {
-    if (indexes.size < adjacentReplacementMinimum) {
+    if (indexes.size < adjacentMutationMinimum) {
       groupedTargets.delete(container);
       continue;
     }
     if (indexes.size < batchedMutationMinimum) {
-      let expectedIndex = -1;
-      let isAdjacent = true;
-      for (const targetNode of indexes.keys()) {
-        if (expectedIndex === -1) expectedIndex = container.indexOf(targetNode);
-        // Callers commonly queue a slice of an ESTree child array in order.
-        // Recognizing that run avoids one linear indexOf() scan per target,
-        // while retaining the cheaper existing path for scattered edits.
-        if (expectedIndex === -1 || container[expectedIndex] !== targetNode) {
-          isAdjacent = false;
-          break;
-        }
-        indexes.set(targetNode, expectedIndex++);
-      }
-      if (!isAdjacent) groupedTargets.delete(container);
+      // Callers commonly queue a slice of an ESTree child array in order.
+      // Recognizing that run avoids one linear indexOf() scan per target.
+      if (!indexOrderedAdjacentTargets(container, indexes)) groupedTargets.delete(container);
       continue;
     }
     for (let i = 0; i < container.length; i++) {

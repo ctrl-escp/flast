@@ -455,6 +455,17 @@ describe('Arborist edge case tests', () => {
     for (let i = 0; i < 160; i++) assert.ok(arb.script.includes(`// comment-${i}`));
   });
 
+  it('Compacts medium ordered runs of adjacent sibling deletions once', () => {
+    const code = Array.from({length: 48}, (_, i) => `call(${i});`).join('\n');
+    const arb = new Arborist(code);
+    const deletedStatements = arb.ast[0].body.slice(16, 48);
+    for (const statement of deletedStatements) arb.deleteNode(statement);
+
+    assert.equal(arb.applyChanges(), 32);
+    assert.equal(arb.ast[0].body.length, 16);
+    assert.equal(arb.ast[0].body[15].expression.arguments[0].value, 15);
+  });
+
   it('Batches sibling replacements without losing comments', () => {
     const code = Array.from({length: 200}, (_, i) => `// comment-${i}\ncall(${i});`).join('\n');
     const arb = new Arborist(code);
