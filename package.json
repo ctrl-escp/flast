@@ -7,6 +7,7 @@
   "type": "module",
   "scripts": {
     "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
     "prepare": "husky",
     "test": "node --test",
     "test:coverage": "node --test --experimental-test-coverage"
