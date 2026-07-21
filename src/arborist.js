@@ -3,6 +3,93 @@ import {generateCode, generateFlatAST} from './flast.js';
 
 /** @import {ASTNode} from './types.d.ts' */
 
+const batchedMutationMinimum = 128;
+const deletedArraySlot = Symbol('deletedArraySlot');
+const scriptParseOptions = {
+  alternateSourceTypeOnFailure: false,
+  parseOpts: {sourceType: 'script', comment: true, tokens: true},
+};
+
+function rebuildFlatAst(script, sourceType) {
+  if (sourceType !== 'script') return generateFlatAST(script);
+  return generateFlatAST(script, scriptParseOptions);
+}
+
+function buildBatchedDeletionStates(ast, nodeIds) {
+  const groupedTargets = new Map();
+  for (let i = 0; i < nodeIds.length; i++) {
+    const node = ast[nodeIds[i]];
+    if (!node || node.nodeId !== nodeIds[i]) continue;
+    const container = node.parentNode?.[node.parentKey];
+    if (!Array.isArray(container)) continue;
+    const targets = groupedTargets.get(container);
+    if (targets) targets.set(node, -1);
+    else groupedTargets.set(container, new Map([[node, -1]]));
+  }
+
+  const states = new Map();
+  for (const [container, indexes] of groupedTargets) {
+    if (indexes.size < batchedMutationMinimum) continue;
+    for (let i = 0; i < container.length; i++) {
+      if (indexes.has(container[i])) indexes.set(container[i], i);
+    }
+    let needsCommentNeighbors = false;
+    for (const node of indexes.keys()) {
+      if (node.leadingComments?.length || node.trailingComments?.length) {
+        needsCommentNeighbors = true;
+        break;
+      }
+    }
+    let previous;
+    let next;
+    if (needsCommentNeighbors) {
+      previous = new Int32Array(container.length);
+      next = new Int32Array(container.length);
+      for (let i = 0; i < container.length; i++) {
+        previous[i] = i - 1;
+        next[i] = i + 1 < container.length ? i + 1 : -1;
+      }
+    }
+    states.set(container, {container, indexes, previous, next, remaining: container.length});
+  }
+  groupedTargets.clear();
+  return states;
+}
+
+function compactDeletedSlots(container) {
+  let writeIndex = 0;
+  for (let readIndex = 0; readIndex < container.length; readIndex++) {
+    if (container[readIndex] === deletedArraySlot) continue;
+    if (readIndex in container) container[writeIndex] = container[readIndex];
+    else delete container[writeIndex];
+    writeIndex++;
+  }
+  container.length = writeIndex;
+}
+
+function buildBatchedReplacementIndexes(replacements) {
+  const groupedTargets = new Map();
+  for (let i = 0; i < replacements.length; i++) {
+    const targetNode = replacements[i][0];
+    const container = targetNode?.parentNode?.[targetNode.parentKey];
+    if (!Array.isArray(container)) continue;
+    const indexes = groupedTargets.get(container);
+    if (indexes) indexes.set(targetNode, -1);
+    else groupedTargets.set(container, new Map([[targetNode, -1]]));
+  }
+
+  for (const [container, indexes] of groupedTargets) {
+    if (indexes.size < batchedMutationMinimum) {
+      groupedTargets.delete(container);
+      continue;
+    }
+    for (let i = 0; i < container.length; i++) {
+      if (indexes.has(container[i])) indexes.set(container[i], i);
+    }
+  }
+  return groupedTargets;
+}
+
 /**
  * Arborist allows marking nodes for deletion or replacement, and then applying all changes in a single pass.
  * Note: Calling markNode(), replaceNode(), or deleteNode() only queues a change; the AST is not officially changed until applyChanges() is called.
@@ -32,15 +119,25 @@ export class Arborist {
 	 * @return {ASTNode}
 	 */
   _getCorrectTargetForDeletion(startNode) {
-    const relevantTypes = ['ExpressionStatement', 'UnaryExpression', 'UpdateExpression'];
-    const relevantClauses = ['consequent', 'alternate'];
     let currentNode = startNode;
-    while (currentNode.parentNode && (relevantTypes.includes(currentNode.parentNode.type) ||
-			(currentNode.parentNode.type === 'VariableDeclaration' &&
-				(currentNode.parentNode.declarations.length === 1 ||
-					!currentNode.parentNode.declarations.some(d => d !== currentNode && !d.isMarked))
-			))) currentNode = currentNode.parentNode;
-    if (relevantClauses.includes(currentNode.parentKey)) currentNode.isEmpty = true;
+    while (currentNode.parentNode) {
+      const parent = currentNode.parentNode;
+      let canRemoveParent = parent.type === 'ExpressionStatement' ||
+        parent.type === 'UnaryExpression' || parent.type === 'UpdateExpression';
+      if (!canRemoveParent && parent.type === 'VariableDeclaration') {
+        canRemoveParent = true;
+        for (let i = 0; i < parent.declarations.length; i++) {
+          const declaration = parent.declarations[i];
+          if (declaration !== currentNode && !declaration.isMarked) {
+            canRemoveParent = false;
+            break;
+          }
+        }
+      }
+      if (!canRemoveParent) break;
+      currentNode = parent;
+    }
+    if (currentNode.parentKey === 'consequent' || currentNode.parentKey === 'alternate') currentNode.isEmpty = true;
     return currentNode;
   }
 
@@ -57,13 +154,11 @@ export class Arborist {
 	 * @param {object|ASTNode} [replacementNode] If exists, replace the target node with this node.
 	 */
   markNode(targetNode, replacementNode) {
-    let alreadyMarked = false;
     let currentNode = targetNode;
     while (currentNode) {
-	  if (currentNode.isMarked) alreadyMarked = true;
+      if (currentNode.isMarked) return;
       currentNode = currentNode.parentNode;
     }
-    if (alreadyMarked) {return;}
     if (replacementNode) {  // Mark for replacement
       this.replacements.push([targetNode, replacementNode]);
       targetNode.isMarked = true;
@@ -124,11 +219,12 @@ export class Arborist {
   applyChanges() {
     let changesCounter = 0;
     let rootNode = this.ast[0];
+    const originalSourceType = rootNode?.sourceType;
     let astWasMutated = false;
     let originalScript = this.script;
     const restoreAst = () => {
       if (!astWasMutated) return;
-      const restoredAst = generateFlatAST(originalScript);
+      const restoredAst = rebuildFlatAst(originalScript, originalSourceType);
       if (restoredAst.length) this.ast = restoredAst;
     };
     try {
@@ -150,10 +246,10 @@ export class Arborist {
             Arborist.mergeComments(trailingCommentTarget, {trailingComments}, 'trailingComments');
           }
         } else {
+          const batchedDeletionStates = buildBatchedDeletionStates(this.ast, this.markedForDeletion);
           for (const targetNodeId of this.markedForDeletion) {
             try {
-              let targetNode = this.ast[targetNodeId];
-              targetNode = targetNode.nodeId === targetNodeId ? targetNode : this.ast.find(n => n.nodeId === targetNodeId);
+              const targetNode = this.ast[targetNodeId];
               if (targetNode) {
                 const parent = targetNode.parentNode;
                 if (parent[targetNode.parentKey] === targetNode) {
@@ -162,23 +258,46 @@ export class Arborist {
                   Arborist.mergeComments(parent, targetNode, 'trailingComments');
                   ++changesCounter;
                 } else if (Array.isArray(parent[targetNode.parentKey])) {
-                  const idx = parent[targetNode.parentKey].indexOf(targetNode);
+                  const container = parent[targetNode.parentKey];
+                  const deletionState = batchedDeletionStates.get(container);
+                  const idx = deletionState?.indexes.get(targetNode) ?? container.indexOf(targetNode);
                   if (idx !== -1) {
-                    parent[targetNode.parentKey].splice(idx, 1);
-                    astWasMutated = true;
-                    const comments = (targetNode.leadingComments || []).concat(targetNode.trailingComments || []);
-                    let targetParent = null;
-                    if (parent[targetNode.parentKey].length > 0) {
-                      if (idx > 0) {
-                        targetParent = parent[targetNode.parentKey][idx - 1];
-                        Arborist.mergeComments(targetParent, {trailingComments: comments}, 'trailingComments');
-                      } else {
-                        targetParent = parent[targetNode.parentKey][0];
-                        Arborist.mergeComments(targetParent, {leadingComments: comments}, 'leadingComments');
+                    let previousIndex = idx - 1;
+                    let nextIndex = idx + 1 < container.length ? idx + 1 : -1;
+                    if (deletionState) {
+                      if (container[idx] !== targetNode) continue;
+                      if (deletionState.previous) {
+                        previousIndex = deletionState.previous[idx];
+                        nextIndex = deletionState.next[idx];
+                        if (previousIndex !== -1) deletionState.next[previousIndex] = nextIndex;
+                        if (nextIndex !== -1) deletionState.previous[nextIndex] = previousIndex;
                       }
+                      container[idx] = deletedArraySlot;
+                      deletionState.remaining--;
                     } else {
-                      this.logger.debug(`[!] Deleted last element from array '${targetNode.parentKey}' in parent node type '${parent.type}'. Array is now empty.`);
-                      Arborist.mergeComments(parent, {trailingComments: comments}, 'trailingComments');
+                      container.splice(idx, 1);
+                      nextIndex = idx < container.length ? idx : -1;
+                    }
+                    astWasMutated = true;
+                    const leadingComments = targetNode.leadingComments;
+                    const trailingComments = targetNode.trailingComments;
+                    if (leadingComments?.length || trailingComments?.length) {
+                      const comments = leadingComments ? [...leadingComments] : [];
+                      if (trailingComments) comments.push(...trailingComments);
+                      let targetParent = null;
+                      const remaining = deletionState?.remaining ?? container.length;
+                      if (remaining > 0) {
+                        if (previousIndex !== -1) {
+                          targetParent = container[previousIndex];
+                          Arborist.mergeComments(targetParent, {trailingComments: comments}, 'trailingComments');
+                        } else {
+                          targetParent = container[nextIndex];
+                          Arborist.mergeComments(targetParent, {leadingComments: comments}, 'leadingComments');
+                        }
+                      } else {
+                        this.logger.debug(`[!] Deleted last element from array '${targetNode.parentKey}' in parent node type '${parent.type}'. Array is now empty.`);
+                        Arborist.mergeComments(parent, {trailingComments: comments}, 'trailingComments');
+                      }
                     }
                     ++changesCounter;
                   }
@@ -188,6 +307,14 @@ export class Arborist {
               this.logger.debug(`[-] Unable to delete node: ${e}`);
             }
           }
+          for (const state of batchedDeletionStates.values()) {
+            compactDeletedSlots(state.container);
+            state.indexes.clear();
+            state.previous = null;
+            state.next = null;
+          }
+          batchedDeletionStates.clear();
+          const batchedReplacementIndexes = buildBatchedReplacementIndexes(this.replacements);
           for (const [targetNode, replacementNode] of this.replacements) {
             try {
               if (targetNode) {
@@ -199,9 +326,11 @@ export class Arborist {
                   Arborist.mergeComments(replacementNode, targetNode, 'trailingComments');
                   ++changesCounter;
                 } else if (Array.isArray(parent[targetNode.parentKey])) {
-                  const idx = parent[targetNode.parentKey].indexOf(targetNode);
+                  const container = parent[targetNode.parentKey];
+                  const indexes = batchedReplacementIndexes.get(container);
+                  const idx = indexes?.get(targetNode) ?? container.indexOf(targetNode);
                   if (idx === -1) continue;
-                  parent[targetNode.parentKey][idx] = replacementNode;
+                  container[idx] = replacementNode;
                   astWasMutated = true;
                   Arborist.mergeComments(replacementNode, targetNode, 'leadingComments');
                   Arborist.mergeComments(replacementNode, targetNode, 'trailingComments');
@@ -212,6 +341,8 @@ export class Arborist {
               this.logger.debug(`[-] Unable to replace node: ${e}`);
             }
           }
+          for (const indexes of batchedReplacementIndexes.values()) indexes.clear();
+          batchedReplacementIndexes.clear();
         }
       }
       if (changesCounter) {
@@ -220,7 +351,7 @@ export class Arborist {
         // If any of the changes made will break the script the next line will fail and the
         // script will remain the same. If it doesn't break, the changes are valid and the script can be marked as modified.
         const script = generateCode(rootNode);
-        const ast = generateFlatAST(script);
+        const ast = rebuildFlatAst(script, rootNode?.sourceType || originalSourceType);
         if (ast && ast.length) {
           this.ast = ast;
           this.script = script;

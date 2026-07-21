@@ -373,4 +373,52 @@ describe('Arborist edge case tests', () => {
     assert.ok(arrayNode.isMarked);
     for (const lit of literals) {assert.ok(!lit.isMarked);}
   });
+
+  it('Batches sibling deletions without losing comments', () => {
+    const code = Array.from({length: 200}, (_, i) => `// comment-${i}\ncall(${i});`).join('\n');
+    const arb = new Arborist(code);
+    const deletedStatements = arb.ast[0].body.slice(0, 160);
+    for (const statement of deletedStatements) arb.deleteNode(statement);
+
+    assert.equal(arb.applyChanges(), 160);
+    assert.equal(arb.ast[0].body.length, 40);
+    assert.equal(arb.ast[0].body[0].expression.arguments[0].value, 160);
+    for (let i = 0; i < 160; i++) assert.ok(arb.script.includes(`// comment-${i}`));
+  });
+
+  it('Batches sibling replacements without losing comments', () => {
+    const code = Array.from({length: 200}, (_, i) => `// comment-${i}\ncall(${i});`).join('\n');
+    const arb = new Arborist(code);
+    const replacedStatements = arb.ast[0].body.slice(0, 160);
+    for (const statement of replacedStatements) arb.replaceNode(statement, {type: 'EmptyStatement'});
+
+    assert.equal(arb.applyChanges(), 160);
+    assert.equal(arb.ast[0].body.length, 200);
+    assert.ok(arb.ast[0].body.slice(0, 160).every(node => node.type === 'EmptyStatement'));
+    for (let i = 0; i < 160; i++) assert.ok(arb.script.includes(`// comment-${i}`));
+  });
+
+  it('Preserves sparse array holes during batched deletions', () => {
+    const values = Array.from({length: 160}, (_, i) => i === 140 ? '' : i).join(',');
+    const arb = new Arborist(`[${values}];`);
+    const deletedElements = arb.ast.find(node => node.type === 'ArrayExpression').elements
+      .filter(Boolean)
+      .slice(0, 128);
+    for (const element of deletedElements) arb.deleteNode(element);
+
+    assert.equal(arb.applyChanges(), 128);
+    const elements = arb.ast.find(node => node.type === 'ArrayExpression').elements;
+    assert.equal(elements.length, 32);
+    assert.equal(elements.filter(Boolean).length, 31);
+  });
+
+  it('Preserves script source type after applying changes', () => {
+    const arb = new Arborist('with (target) { value = 1; }');
+    const literal = arb.ast.find(node => node.type === 'Literal');
+    arb.replaceNode(literal, {type: 'Literal', value: 2, raw: '2'});
+
+    assert.equal(arb.applyChanges(), 1);
+    assert.equal(arb.ast[0].sourceType, 'script');
+    assert.match(arb.script, /value = 2/);
+  });
 });
