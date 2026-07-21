@@ -35,11 +35,11 @@ export class Arborist {
     const relevantTypes = ['ExpressionStatement', 'UnaryExpression', 'UpdateExpression'];
     const relevantClauses = ['consequent', 'alternate'];
     let currentNode = startNode;
-    while (relevantTypes.includes(currentNode?.parentNode?.type) ||
+    while (currentNode.parentNode && (relevantTypes.includes(currentNode.parentNode.type) ||
 			(currentNode.parentNode.type === 'VariableDeclaration' &&
 				(currentNode.parentNode.declarations.length === 1 ||
 					!currentNode.parentNode.declarations.some(d => d !== currentNode && !d.isMarked))
-			)) currentNode = currentNode.parentNode;
+			))) currentNode = currentNode.parentNode;
     if (relevantClauses.includes(currentNode.parentKey)) currentNode.isEmpty = true;
     return currentNode;
   }
@@ -69,6 +69,7 @@ export class Arborist {
       targetNode.isMarked = true;
     } else {                // Mark for deletion
       targetNode = this._getCorrectTargetForDeletion(targetNode);
+      if (!targetNode.parentNode) return;
       if (targetNode.isEmpty) this.markNode(targetNode, {type: 'EmptyStatement'});
       else if (!targetNode.isMarked) {
         this.markedForDeletion.push(targetNode.nodeId);
@@ -123,8 +124,16 @@ export class Arborist {
   applyChanges() {
     let changesCounter = 0;
     let rootNode = this.ast[0];
+    let astWasMutated = false;
+    let originalScript = this.script;
+    const restoreAst = () => {
+      if (!astWasMutated) return;
+      const restoredAst = generateFlatAST(originalScript);
+      if (restoredAst.length) this.ast = restoredAst;
+    };
     try {
       if (this.getNumberOfChanges() > 0) {
+        originalScript = rootNode?.src ?? (this.script || generateCode(rootNode));
         if (rootNode.isMarked) {
           const rootNodeReplacement = this.replacements.find(n => n[0].nodeId === 0);
           ++changesCounter;
@@ -149,12 +158,14 @@ export class Arborist {
                 const parent = targetNode.parentNode;
                 if (parent[targetNode.parentKey] === targetNode) {
                   delete parent[targetNode.parentKey];
+                  astWasMutated = true;
                   Arborist.mergeComments(parent, targetNode, 'trailingComments');
                   ++changesCounter;
                 } else if (Array.isArray(parent[targetNode.parentKey])) {
                   const idx = parent[targetNode.parentKey].indexOf(targetNode);
                   if (idx !== -1) {
                     parent[targetNode.parentKey].splice(idx, 1);
+                    astWasMutated = true;
                     const comments = (targetNode.leadingComments || []).concat(targetNode.trailingComments || []);
                     let targetParent = null;
                     if (parent[targetNode.parentKey].length > 0) {
@@ -183,12 +194,15 @@ export class Arborist {
                 const parent = targetNode.parentNode;
                 if (parent[targetNode.parentKey] === targetNode) {
                   parent[targetNode.parentKey] = replacementNode;
+                  astWasMutated = true;
                   Arborist.mergeComments(replacementNode, targetNode, 'leadingComments');
                   Arborist.mergeComments(replacementNode, targetNode, 'trailingComments');
                   ++changesCounter;
                 } else if (Array.isArray(parent[targetNode.parentKey])) {
                   const idx = parent[targetNode.parentKey].indexOf(targetNode);
+                  if (idx === -1) continue;
                   parent[targetNode.parentKey][idx] = replacementNode;
+                  astWasMutated = true;
                   Arborist.mergeComments(replacementNode, targetNode, 'leadingComments');
                   Arborist.mergeComments(replacementNode, targetNode, 'trailingComments');
                   ++changesCounter;
@@ -213,11 +227,13 @@ export class Arborist {
         }
         else {
           this.logger.log(`[-] Modified script is invalid. Reverting ${changesCounter} changes...`);
+          restoreAst();
           changesCounter = 0;
         }
       }
     } catch (e) {
       this.logger.log(`[-] Unable to apply changes to AST: ${e}`);
+      restoreAst();
       changesCounter = 0;
     }
     ++this.appliedCounter;

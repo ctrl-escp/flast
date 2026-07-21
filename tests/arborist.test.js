@@ -74,6 +74,14 @@ describe('Arborist tests', () => {
     arborist.applyChanges();
     assert.equal(arborist.script, expectedResult, 'An incorrect node was targeted for deletion.');
   });
+  it('Verify deleting the root is ignored', () => {
+    const arborist = new Arborist('a;');
+
+    assert.doesNotThrow(() => arborist.deleteNode(arborist.ast[0]));
+    assert.equal(arborist.getNumberOfChanges(), 0, 'A root deletion was queued');
+    assert.equal(arborist.applyChanges(), 0);
+    assert.equal(arborist.script, 'a;');
+  });
   it('Verify a valid script can be used to initialize an arborist instance', () => {
     const code = 'console.log(\'test\');';
     let error = '';
@@ -103,6 +111,12 @@ describe('Arborist tests', () => {
     assert.equal(error, '', `Arborist instantiated with an error: ${error}`);
     assert.deepEqual(arborist.ast, ast, 'Arborist ast array did not match initialization argument.');
   });
+  it('Verify an empty AST can apply no changes', () => {
+    const arborist = new Arborist([]);
+
+    assert.equal(arborist.applyChanges(), 0);
+    assert.deepEqual(arborist.ast, []);
+  });
   it('Verify invalid changes are not applied', () => {
     const code = 'console.log(\'test\');';
     const arborist = new Arborist(code);
@@ -110,6 +124,23 @@ describe('Arborist tests', () => {
     arborist.markNode(arborist.ast.find(n => n.name === 'log'), {type: 'EmptyStatement'});
     arborist.applyChanges();
     assert.equal(arborist.script, code, 'Invalid changes were applied.');
+  });
+  it('Verify the AST is restored after invalid changes', () => {
+    const code = 'console.log(\'test\');';
+    const arborist = new Arborist(code);
+    arborist.markNode(arborist.ast.find(n => n.type === 'Literal'), {type: 'EmptyStatement'});
+    arborist.markNode(arborist.ast.find(n => n.name === 'log'), {type: 'EmptyStatement'});
+
+    assert.equal(arborist.applyChanges(), 0, 'Invalid changes should not be reported as applied');
+    assert.equal(arborist.script, code, 'The script changed after invalid changes');
+    assert.equal(arborist.ast.find(n => n.type === 'MemberExpression').property.name, 'log',
+      'The AST retained an invalid property replacement');
+    assert.equal(arborist.ast.find(n => n.type === 'CallExpression').arguments[0].value, 'test',
+      'The AST retained an invalid argument replacement');
+
+    arborist.replaceNode(arborist.ast.find(n => n.type === 'Literal'), {type: 'Literal', value: 'ok'});
+    assert.equal(arborist.applyChanges(), 1, 'The restored AST could not accept a later valid change');
+    assert.equal(arborist.script, 'console.log(\'ok\');');
   });
   it('Verify comments aren\'t duplicated when replacing the root node', () => {
     const code = '//comment1\nconst a = 1, b = 2;';
@@ -286,6 +317,17 @@ describe('Arborist edge case tests', () => {
 
     assert.equal(numberOfChangesMade, 1, 'A failed replacement should not count as applied');
     assert.equal(arb.script, 'let a = 1, b = 20;', 'A failed replacement prevented later valid replacements');
+  });
+
+  it('A detached array child is not counted as replaced', () => {
+    const arb = new Arborist('call(1, 2);');
+    const call = arb.ast.find(n => n.type === 'CallExpression');
+    const target = call.arguments[0];
+    call.arguments.shift();
+    arb.replaceNode(target, {type: 'Literal', value: 10});
+
+    assert.equal(arb.applyChanges(), 0, 'A detached node was counted as replaced');
+    assert.equal(call.arguments[-1], undefined, 'The replacement was written to an invalid array property');
   });
 
   it('applyChanges returns 0 when an outer failure occurs', () => {
