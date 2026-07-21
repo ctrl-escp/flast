@@ -184,24 +184,42 @@ function extractNodesFromRoot(rootNode, opts) {
   const allNodes = [];
   const scopes = opts.detailed ? getAllScopes(rootNode) : {};
 
+  const parents = [];
+  const nextChildIndexes = [];
   let visitor = rootNode;
-  const lastParsed = {};
   while (visitor) {
-    if(!visitor.childNodes){
-      allNodes.push(parseNode(opts, rootNode, scopes, allNodes.length, visitor));
-      if (!typeMap[visitor.type]) {
-        typeMap[visitor.type] = [];
-        typeMap.typeList.push(visitor.type);
-      }
-      typeMap[visitor.type].push(visitor);
-      lastParsed[visitor.nodeId] = 0;
+    allNodes.push(parseNode(opts, rootNode, scopes, allNodes.length, visitor));
+    if (!typeMap[visitor.type]) {
+      typeMap[visitor.type] = [];
+      typeMap.typeList.push(visitor.type);
     }
-    const visitorId = visitor.nodeId;
-    if(lastParsed[visitorId] < visitor.childNodes.length){
-      visitor = visitor.childNodes[lastParsed[visitorId]++];
-    }else{
-      visitor = visitor.parentNode;
-      delete lastParsed[visitorId];
+    typeMap[visitor.type].push(visitor);
+
+    let childIndex = 0;
+    while (childIndex < visitor.childNodes.length && visitor.childNodes[childIndex].childNodes) childIndex++;
+    if (childIndex < visitor.childNodes.length) {
+      parents.push(visitor);
+      nextChildIndexes.push(childIndex + 1);
+      visitor = visitor.childNodes[childIndex];
+      continue;
+    }
+
+    visitor = null;
+    while (parents.length) {
+      const parentIndex = parents.length - 1;
+      const parent = parents[parentIndex];
+      const nextChildIndex = nextChildIndexes[parentIndex];
+      if (nextChildIndex < parent.childNodes.length) {
+        nextChildIndexes[parentIndex] = nextChildIndex + 1;
+        const child = parent.childNodes[nextChildIndex];
+        if (!child.childNodes) {
+          visitor = child;
+          break;
+        }
+      } else {
+        parents.pop();
+        nextChildIndexes.pop();
+      }
     }
   }
 
@@ -315,6 +333,7 @@ function getAllScopes(rootNode) {
     optimistic: true,
     ecmaVersion: currentYear,
     sourceType}).acquireAll(rootNode)[0];
+  const globalVariables = new Set(globalScope.variables);
   let scopeId = 0;
   const allScopes = {};
   const stack = [globalScope];
@@ -336,7 +355,10 @@ function getAllScopes(rootNode) {
       // A single global scope is enough, so if there are variables in a module scope, add them to the global scope
       for (let i = 0; i < scope.variables.length; i++) {
         const v = scope.variables[i];
-        if (!globalScope.variables.includes(v)) globalScope.variables.push(v);
+        if (!globalVariables.has(v)) {
+          globalVariables.add(v);
+          globalScope.variables.push(v);
+        }
       }
     }
     for (let i = scope.childScopes.length - 1; i >= 0; i--) {

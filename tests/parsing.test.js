@@ -1,6 +1,6 @@
 import assert from 'node:assert';
 import {describe, it} from 'node:test';
-import {generateFlatAST, generateCode} from '../src/index.js';
+import {extractNodesFromRoot, generateFlatAST, generateCode} from '../src/index.js';
 
 describe('Parsing tests', () => {
   it('Verify the function-expression-name scope is always replaced with its child scope', () => {
@@ -124,6 +124,8 @@ describe('Parsing tests', () => {
     const code = 'function a() {return [1];}\nconst b = a();';
     const ast = generateFlatAST(code);
     ast.forEach(n => assert.ok(n.scope.type !== 'module', 'Module scope was not ignored'));
+    assert.deepEqual(ast[0].allScopes[0].variables.map(variable => variable.name), ['a', 'b'],
+      'Module variables were not merged into the global scope exactly once');
   });
   it('Verify the lineage is correct', () => {
     const code = '(function() {var a; function b() {var c;}})();';
@@ -231,6 +233,22 @@ describe('Parsing tests', () => {
       error = e.message;
     }
     assert.ok(ast.length, `Large script was not parsed.${error ? ` Error: ${error}` : ''}`);
+  });
+  it('Verify deeply nested ASTs do not overflow traversal', () => {
+    const depth = 20000;
+    const rootNode = {type: 'Program', start: 0, end: 0, sourceType: 'script', body: []};
+    let currentNode = rootNode;
+    for (let i = 0; i < depth; i++) {
+      const child = {type: 'UnaryExpression', start: 0, end: 0, operator: '!', prefix: true};
+      currentNode.argument = child;
+      currentNode = child;
+    }
+
+    const ast = extractNodesFromRoot(rootNode, {detailed: false, includeSrc: false});
+
+    assert.equal(ast.length, depth + 1);
+    assert.equal(ast.at(-1).nodeId, depth);
+    assert.ok(ast.every((node, index) => node.nodeId === index));
   });
   it('Verify all identifiers are referenced correctly', () => {
     const code = 'let a = 1; switch(a) {case 1: a;}';
