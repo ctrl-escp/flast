@@ -544,4 +544,53 @@ describe('Arborist edge case tests', () => {
     assert.deepEqual(summarizeDetailedScopes(arb.ast), summarizeDetailedScopes(oracle));
     assert.ok(arb.ast.every((node, index) => node.nodeId === index && arb.ast[node.nodeId] === node));
   });
+
+  it('Preserves comments when metadata reuse requires rich parsing', () => {
+    const code = '// file header\nconst value = 1; // retained';
+    const options = {compactScopes: true, retainTokens: false};
+    const arb = new Arborist(code, options);
+    const literal = arb.ast.find(node => node.type === 'Literal');
+    arb.replaceNode(literal, {type: 'Literal', value: 2, raw: '2'});
+
+    assert.equal(arb.applyChanges(), 1);
+    assert.match(arb.script, /file header/);
+    assert.match(arb.script, /retained/);
+    assert.equal(arb.ast[0].tokens, undefined);
+  });
+
+  it('Detects attached comments when the parser comment list is unavailable', () => {
+    const code = '// file header\nconst value = 1;';
+    const options = {compactScopes: true, retainTokens: false};
+    const ast = generateFlatAST(code, options);
+    delete ast[0].comments;
+    const arb = new Arborist(ast, options);
+    const literal = arb.ast.find(node => node.type === 'Literal');
+    arb.replaceNode(literal, {type: 'Literal', value: 2, raw: '2'});
+
+    assert.equal(arb.applyChanges(), 1);
+    assert.match(arb.script, /file header/);
+  });
+
+  it('Retains tokens when metadata reuse is configured to keep them', () => {
+    const arb = new Arborist('const value = 1;', {compactScopes: true});
+    const literal = arb.ast.find(node => node.type === 'Literal');
+    arb.replaceNode(literal, {type: 'Literal', value: 2, raw: '2'});
+
+    assert.equal(arb.applyChanges(), 1);
+    assert.ok(arb.ast[0].tokens.length > 0);
+  });
+
+  it('Preserves script mode during lean metadata reuse', () => {
+    const arb = new Arborist('with (target) { value = 1; }', {
+      compactScopes: true,
+      retainTokens: false,
+    });
+    const literal = arb.ast.find(node => node.type === 'Literal');
+    arb.replaceNode(literal, {type: 'Literal', value: 2, raw: '2'});
+
+    assert.equal(arb.applyChanges(), 1);
+    assert.equal(arb.ast[0].sourceType, 'script');
+    assert.equal(arb.ast[0].tokens, undefined);
+    assert.match(arb.script, /value = 2/);
+  });
 });

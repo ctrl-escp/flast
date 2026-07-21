@@ -130,6 +130,8 @@ With `compactScopes: true`, a replacement batch is eligible for a metadata-reuse
 
 Operand identity is required so an operator replacement cannot introduce changed identifiers or bindings under an otherwise approved expression type. Failure of any condition uses the full rebuild. Identifiers, bindings, other structural changes, directives, comments, deletions, and unknown nodes therefore never use metadata reuse.
 
+When metadata reuse is selected, `retainTokens: false` is configured, and no parser or attached comments exist anywhere in the current AST, Arborist also uses a lean basic parse without token/comment arrays. Comment-bearing ASTs and token-retaining configurations always use the rich parse path.
+
 ### Literal `value` and `raw`
 
 For ordinary string, boolean, null, decimal, hexadecimal, and similar literals, escodegen checks whether `raw` represents `value`; a stale `raw` value is normally ignored. For example, `{value: 2, raw: '1'}` generates `2`.

@@ -23,6 +23,7 @@ import {generateCode, generateFlatAST} from './flast.js';
  * @property {Int32Array} scopeIds Per-node declared scope IDs, or -1.
  * @property {Int32Array} scopeIndexes Per-node indexes into the scope records.
  * @property {string[]} types Per-node ESTree types.
+ * @property {boolean} hasComments Whether any parser or attached comments must be preserved.
  * @property {object[]} scopes Compact scope records.
  * @property {object[]} variables Compact variable records.
  * @property {Array<[string, number]>} allScopeEntries Root scope-ID mappings.
@@ -49,7 +50,9 @@ function rebuildFlatAst(script, sourceType, options) {
   return generateFlatAST(script, {
     ...options,
     ...scriptParseOptions,
-    parseOpts: {...options?.parseOpts, ...scriptParseOptions.parseOpts},
+    // User-selected token/comment retention still applies to scripts; only
+    // sourceType must override a stale module setting.
+    parseOpts: {...scriptParseOptions.parseOpts, ...options?.parseOpts, sourceType: 'script'},
   });
 }
 
@@ -266,6 +269,7 @@ function captureCompactMetadata(ast) {
     scopeIds: new Int32Array(nodeCount).fill(-1),
     scopeIndexes: new Int32Array(nodeCount).fill(-1),
     types: new Array(nodeCount),
+    hasComments: Boolean(ast[0].comments?.length),
   };
   const scopeIndexes = new Map();
   const scopes = [];
@@ -328,6 +332,9 @@ function captureCompactMetadata(ast) {
     snapshot.parentKeys[i] = node.parentKey;
     snapshot.scopeIndexes[i] = scopeIndexes.get(node.scope) ?? -1;
     snapshot.types[i] = node.type;
+    if (node.leadingComments?.length || node.trailingComments?.length || node.innerComments?.length) {
+      snapshot.hasComments = true;
+    }
     if (node.scopeId !== undefined) snapshot.scopeIds[i] = node.scopeId;
     if (node.declNode) snapshot.declarations[i] = node.declNode.nodeId;
     if (node.references) snapshot.references[i] = node.references.map(reference => reference.nodeId);
@@ -533,6 +540,10 @@ export class Arborist {
       classifyMutationBatch(this.replacements, this.markedForDeletion) <= mutationImpact.expressionStructural;
     const metadataSnapshot = canReuseDetailedMetadata ? captureCompactMetadata(this.ast) : null;
     if (!metadataSnapshot) canReuseDetailedMetadata = false;
+    // Without comments or retained tokens, producing lexer output only to
+    // discard it adds parse time and transient memory without affecting AST output.
+    const canUseLeanBasicParse = canReuseDetailedMetadata && this.options.retainTokens === false &&
+      !metadataSnapshot.hasComments;
     let astWasMutated = false;
     let originalScript = this.script;
     /**
@@ -675,7 +686,11 @@ export class Arborist {
         this.ast = [];
         let ast;
         if (canReuseDetailedMetadata) {
-          ast = rebuildFlatAst(script, updatedSourceType, {...this.options, detailed: false});
+          const basicOptions = {...this.options, detailed: false};
+          if (canUseLeanBasicParse) {
+            basicOptions.parseOpts = {...this.options.parseOpts, comment: false, tokens: false};
+          }
+          ast = rebuildFlatAst(script, updatedSourceType, basicOptions);
           if (!applyCompactMetadata(metadataSnapshot, ast)) {
             // Do not keep the rejected basic AST alive while allocating the
             // authoritative full rebuild.
