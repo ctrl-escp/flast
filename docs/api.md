@@ -33,6 +33,7 @@ The main flAST entry point. Returns an ordered flat array of enriched nodes.
 ### Returns
 - `ASTNode[]`
 - `[]` for invalid input
+- Each node's `nodeId` equals its array index, so `ast[node.nodeId] === node`.
 
 ### Commonly Used Node Properties
 - `nodeId`

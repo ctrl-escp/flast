@@ -163,7 +163,7 @@ These cover three of the most common flAST workflows:
 ## What You Get Back
 `generateFlatAST(code)` returns an array where:
 - `ast[0]` is the root `Program` node.
-- Every node has a stable `nodeId`.
+- Every node has a stable `nodeId` equal to its array index: `ast[node.nodeId] === node`.
 - Every node can expose `parentNode`, `childNodes`, `parentKey`, and `src`.
 - `ast[0].typeMap` groups nodes by type for fast lookups and exposes `typeList` for the unique node types found in the script.
 - Identifiers can expose `declNode` and `references`.

@@ -104,6 +104,22 @@ describe('Parsing tests', () => {
     assert.deepEqual(ast[0].body, [firstLoop, secondLoop], 'Program body order does not match traversal order');
     assert.deepEqual(ast[0].childNodes.slice(0, 2), [firstLoop, secondLoop], 'Program childNodes order is unstable');
   });
+  it('Verify every nodeId matches its flat AST array index', () => {
+    const fixtures = [
+      generateFlatAST('const source = {value}; ({value = 1} = source);'),
+      generateFlatAST('const pattern = /test/gi;', {
+        parseOpts: {sourceType: 'module', comment: true, tokens: true, loc: true},
+      }),
+      generateFlatAST('function test(value) { return value + 1; }', {detailed: false, includeSrc: false}),
+    ];
+
+    for (const ast of fixtures) {
+      ast.forEach((node, index) => {
+        assert.equal(node.nodeId, index, `Node at index ${index} has nodeId ${node.nodeId}`);
+        assert.equal(ast[node.nodeId], node, `nodeId ${node.nodeId} does not resolve to the same node`);
+      });
+    }
+  });
   it('Verify the module scope is ignored', () => {
     const code = 'function a() {return [1];}\nconst b = a();';
     const ast = generateFlatAST(code);
@@ -167,6 +183,42 @@ describe('Parsing tests', () => {
       'Identifier',
       'Literal',
     ], 'Unexpected traversal output for sparse array holes');
+  });
+  it('Verify sibling nodes with the same start offset are not dropped', () => {
+    const ast = generateFlatAST('const source = {value}; ({value = 1} = source);');
+    const properties = ast.filter(n => n.type === 'Property');
+
+    assert.equal(properties.length, 2, 'Unexpected number of properties');
+    assert.deepEqual(properties.map(n => n.childNodes.map(child => child.type)), [
+      ['Identifier', 'Identifier'],
+      ['Identifier', 'AssignmentPattern'],
+    ], 'A child sharing its sibling\'s start offset was dropped');
+    assert.equal(ast.filter(n => n.type === 'Identifier' && n.name === 'value').length, 4,
+      'The flat AST omitted identifiers at duplicate source offsets');
+  });
+  it('Verify regular expression metadata is not flattened as AST nodes', () => {
+    const ast = generateFlatAST('const pattern = /test/gi;');
+    const literal = ast.find(n => n.type === 'Literal');
+
+    assert.deepEqual(ast.map(n => n.type), [
+      'Program',
+      'VariableDeclaration',
+      'VariableDeclarator',
+      'Identifier',
+      'Literal',
+    ]);
+    assert.equal(literal.regex.pattern, 'test');
+    assert.equal(literal.regex.flags, 'gi');
+    assert.ok(literal.value instanceof RegExp);
+  });
+  it('Verify location metadata is preserved without becoming AST nodes', () => {
+    const ast = generateFlatAST('const value = 1;', {
+      parseOpts: {sourceType: 'module', comment: true, tokens: true, loc: true},
+    });
+
+    assert.equal(ast.length, 5, 'Location metadata created bogus flat nodes');
+    assert.ok(ast.every(n => typeof n.type === 'string'), 'A flattened item is not an AST node');
+    assert.deepEqual(ast[0].loc.start, {line: 1, column: 0});
   });
   it('Verify large flat scripts do not overflow traversal', () => {
     const stmt = 'var x = 1;\n';

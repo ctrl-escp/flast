@@ -20,10 +20,10 @@ function parseCode(inputCode, opts = {}) {
   return rootNode;
 }
 
-const excludedParentKeys = [
+const excludedParentKeys = new Set([
   'type', 'start', 'end', 'range', 'sourceType', 'comments', 'srcClosure', 'nodeId', 'leadingComments', 'trailingComments',
   'childNodes', 'parentNode', 'parentKey', 'scope', 'typeMap', 'lineage', 'ancestry', 'allScopes', 'tokens',
-];
+]);
 
 const generateFlatASTDefaultOptions = {
   // If false, do not include any scope details
@@ -115,14 +115,15 @@ function generateRootNode(inputCode, opts = {}) {
  * @return {ASTNode}
  */
 function parseNode (opts, rootNode, scopes, nodeId, node) {
-  if (node.nodeId !== undefined) return node;
-  const childrenLoc = {}; // Store the location of child nodes to sort them by order
+  const children = [];
+  let childrenAreOrdered = true;
+  let previousStart = -1;
   node.parentKey = node.parentKey || '';	// Make sure parentKey exists
   // Iterate over all keys of the node to find child nodes
   const keys = Object.keys(node);
   for (let i = 0; i < keys.length; i++) {
     const key = keys[i];
-    if (excludedParentKeys.includes(key)) continue;
+    if (excludedParentKeys.has(key)) continue;
     const content = node[key];
     if (content && typeof content === 'object') {
       // Sort each child node by its start position
@@ -130,20 +131,26 @@ function parseNode (opts, rootNode, scopes, nodeId, node) {
       if (Array.isArray(content)) {
         for (let j = 0; j < content.length; j++) {
           const childNode = content[j];
-          if (!childNode) continue;
+          if (!childNode || typeof childNode.type !== 'string') continue;
           childNode.parentNode = node;
           childNode.parentKey = key;
-          childrenLoc[childNode.start] = childNode;
+          if (childNode.start < previousStart) childrenAreOrdered = false;
+          previousStart = childNode.start;
+          children.push(childNode);
         }
-      } else {
+      } else if (typeof content.type === 'string') {
         content.parentNode = node;
         content.parentKey = key;
-        childrenLoc[content.start] = content;
+        if (content.start < previousStart) childrenAreOrdered = false;
+        previousStart = content.start;
+        children.push(content);
       }
     }
   }
-  // Materialize children once to avoid spreading very large arrays into a call frame.
-  node.childNodes = Object.values(childrenLoc);
+  // Preserve nodes that share a source offset, such as shorthand property keys
+  // and values. Most ESTree fields are already in source order, so only sort
+  // the uncommon out-of-order case.
+  node.childNodes = childrenAreOrdered ? children : children.sort((a, b) => a.start - b.start);
 
   node.nodeId = nodeId;
   if (opts.detailed) {
@@ -177,12 +184,11 @@ function extractNodesFromRoot(rootNode, opts) {
   const allNodes = [];
   const scopes = opts.detailed ? getAllScopes(rootNode) : {};
 
-  let nodeId = 0;
   let visitor = rootNode;
   const lastParsed = {};
   while (visitor) {
     if(!visitor.childNodes){
-      allNodes.push(parseNode(opts, rootNode, scopes, nodeId++, visitor));
+      allNodes.push(parseNode(opts, rootNode, scopes, allNodes.length, visitor));
       if (!typeMap[visitor.type]) {
         typeMap[visitor.type] = [];
         typeMap.typeList.push(visitor.type);
