@@ -122,6 +122,7 @@ With `compactScopes: true`, a replacement batch is eligible for a metadata-reuse
    - A `BinaryExpression` operator change with the exact same `left` and `right` node objects.
    - A `LogicalExpression` operator change with the exact same `left` and `right` node objects.
    - An `AssignmentExpression` operator change with the exact same `left` and `right` node objects.
+   - A `UnaryExpression` operator change with the exact same `argument` node object.
    - An `UpdateExpression` operator or prefix change with the exact same `argument` node object.
 4. No target is part of a directive prologue, because changing directives can alter strict-mode scope semantics.
 5. Replacement nodes do not introduce new leading or trailing comments.

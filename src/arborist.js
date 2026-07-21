@@ -192,6 +192,7 @@ const reusableOperatorChildKeys = {
   AssignmentExpression: ['left', 'right'],
   BinaryExpression: ['left', 'right'],
   LogicalExpression: ['left', 'right'],
+  UnaryExpression: ['argument'],
   UpdateExpression: ['argument'],
 };
 

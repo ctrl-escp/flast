@@ -544,19 +544,20 @@ describe('Arborist edge case tests', () => {
   });
 
   it('Reuses compact metadata for operator-only replacements', () => {
-    const code = 'let left = 1, right = 2, count = 0; left + right; left && right; left += right; count++;';
+    const code = 'let left = 1, right = 2, count = 0; left + right; left && right; left += right; !left; count++;';
     const options = {compactScopes: true, retainTokens: false};
     const arb = new Arborist(code, options);
     const replacements = {
       BinaryExpression: '-',
       LogicalExpression: '||',
       AssignmentExpression: '-=',
+      UnaryExpression: '~',
       UpdateExpression: '--',
     };
     for (const [type, operator] of Object.entries(replacements)) {
       const target = arb.ast.find(node => node.type === type);
       const replacement = {type, operator};
-      if (type === 'UpdateExpression') {
+      if (type === 'UnaryExpression' || type === 'UpdateExpression') {
         replacement.argument = target.argument;
         replacement.prefix = target.prefix;
       } else {
@@ -566,7 +567,7 @@ describe('Arborist edge case tests', () => {
       arb.replaceNode(target, replacement);
     }
 
-    assert.equal(arb.applyChanges(), 4);
+    assert.equal(arb.applyChanges(), 5);
     const oracle = generateFlatAST(arb.script, options);
     assert.deepEqual(summarizeDetailedNodes(arb.ast), summarizeDetailedNodes(oracle));
     assert.deepEqual(summarizeDetailedScopes(arb.ast), summarizeDetailedScopes(oracle));
