@@ -574,6 +574,35 @@ describe('Arborist edge case tests', () => {
     assert.ok(arb.ast.every((node, index) => node.nodeId === index && arb.ast[node.nodeId] === node));
   });
 
+  it('Fully rebuilds when an operator changes the reparsed expression type', () => {
+    const options = {compactScopes: true, retainTokens: false};
+    const arb = new Arborist('const value = left + right;', options);
+    const target = arb.ast.find(node => node.type === 'BinaryExpression');
+    arb.replaceNode(target, {
+      type: 'BinaryExpression',
+      operator: '&&',
+      left: target.left,
+      right: target.right,
+    });
+
+    assert.equal(arb.applyChanges(), 1);
+    assert.equal(arb.ast.find(node => node.type === 'LogicalExpression').operator, '&&');
+    const oracle = generateFlatAST(arb.script, options);
+    assert.deepEqual(summarizeDetailedNodes(arb.ast), summarizeDetailedNodes(oracle));
+  });
+
+  it('Fully rebuilds when a BigInt literal becomes a unary expression', () => {
+    const options = {compactScopes: true, retainTokens: false};
+    const arb = new Arborist('const value = 1n;', options);
+    const target = arb.ast.find(node => node.type === 'Literal');
+    arb.replaceNode(target, {type: 'Literal', value: -2n, bigint: '-2', raw: '-2n'});
+
+    assert.equal(arb.applyChanges(), 1);
+    assert.equal(arb.ast.find(node => node.type === 'UnaryExpression').operator, '-');
+    const oracle = generateFlatAST(arb.script, options);
+    assert.deepEqual(summarizeDetailedNodes(arb.ast), summarizeDetailedNodes(oracle));
+  });
+
   it('Preserves comments when metadata reuse requires rich parsing', () => {
     const code = '// file header\nconst value = 1; // retained';
     const options = {compactScopes: true, retainTokens: false};

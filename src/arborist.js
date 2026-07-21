@@ -196,6 +196,19 @@ const reusableOperatorChildKeys = {
   UpdateExpression: ['argument'],
 };
 
+const reusableOperators = {
+  AssignmentExpression: new Set([
+    '=', '+=', '-=', '*=', '/=', '%=', '**=', '<<=', '>>=', '>>>=', '|=', '^=', '&=', '||=', '&&=', '??=',
+  ]),
+  BinaryExpression: new Set([
+    '==', '!=', '===', '!==', '<', '<=', '>', '>=', '<<', '>>', '>>>', '+', '-', '*', '/', '%', '**',
+    '|', '^', '&', 'in', 'instanceof',
+  ]),
+  LogicalExpression: new Set(['||', '&&', '??']),
+  UnaryExpression: new Set(['-', '+', '!', '~', 'typeof', 'void', 'delete']),
+  UpdateExpression: new Set(['++', '--']),
+};
+
 /**
  * Identify the syntax category of an ESTree Literal.
  * @param {ASTNode|object} node Literal node.
@@ -209,6 +222,24 @@ function literalCategory(node) {
 }
 
 /**
+ * Check whether code generation preserves a replacement Literal's node shape.
+ * @param {ASTNode|object} node Replacement literal.
+ * @param {string} category Literal category returned by literalCategory().
+ * @return {boolean} Whether reparsing can still produce one Literal node.
+ */
+function hasReusableLiteralShape(node, category) {
+  if (category === 'number') {
+    // Negative numbers and NaN cannot be emitted as one ESTree Literal.
+    return typeof node.value === 'number' && !Number.isNaN(node.value) && node.value >= 0 && !Object.is(node.value, -0);
+  }
+  if (category === 'bigint') {
+    if (typeof node.value === 'bigint') return node.value >= 0n;
+    return typeof node.bigint === 'string' && !node.bigint.trimStart().startsWith('-');
+  }
+  return true;
+}
+
+/**
  * Verify that an operator replacement retains the exact operand subtrees.
  * @param {ASTNode} targetNode Existing expression node.
  * @param {ASTNode|object} replacementNode Replacement expression node.
@@ -217,7 +248,9 @@ function literalCategory(node) {
 function hasReusableOperatorChildren(targetNode, replacementNode) {
   if (targetNode.type !== replacementNode.type || typeof replacementNode.operator !== 'string') return false;
   const childKeys = reusableOperatorChildKeys[targetNode.type];
-  if (!childKeys) return false;
+  if (!childKeys || !reusableOperators[targetNode.type].has(replacementNode.operator)) return false;
+  // Operator families are part of ESTree node identity: `&&` reparses as a
+  // LogicalExpression even if a caller labels it as a BinaryExpression.
   // Requiring object identity prevents a replacement from smuggling changed
   // identifiers or bindings into an otherwise whitelisted expression type.
   for (let i = 0; i < childKeys.length; i++) {
@@ -244,7 +277,9 @@ function classifyReplacement(targetNode, replacementNode) {
     // categories also excludes values such as negative numbers that reparse
     // into a different ESTree shape.
     if (targetNode.parentNode?.directive !== undefined) return mutationImpact.unknown;
-    return literalCategory(targetNode) === literalCategory(replacementNode) ?
+    const replacementCategory = literalCategory(replacementNode);
+    return literalCategory(targetNode) === replacementCategory &&
+      hasReusableLiteralShape(replacementNode, replacementCategory) ?
       mutationImpact.valueOnly : mutationImpact.unknown;
   }
   if (hasReusableOperatorChildren(targetNode, replacementNode)) {
