@@ -181,6 +181,7 @@ function indexNode(opts, rootNode, scopes, nodeId, node) {
 /**
  * @param {ASTTypeMap} typeMap
  * @param {ASTAllScopes} scopes
+ * @return {void}
  */
 function linkIdentifierRelations(typeMap, scopes) {
   const identifiers = typeMap.Identifier || [];
@@ -199,6 +200,11 @@ function linkIdentifierRelations(typeMap, scopes) {
 function compactScopeGraph(scopes) {
   const projectedScopes = new WeakMap();
   const projectedVariables = new WeakMap();
+  /**
+   * Project an eslint-scope variable into flAST's documented representation.
+   * @param {object|null|undefined} variable eslint-scope variable.
+   * @return {object|null|undefined} Compact variable projection.
+   */
   const projectVariable = variable => {
     if (!variable) return variable;
     let projected = projectedVariables.get(variable);
@@ -224,6 +230,8 @@ function compactScopeGraph(scopes) {
       variables: [],
       references: [],
     });
+    // Excluded module/function-name scopes can still participate in public
+    // upper and variableScope relationships, so project the reachable graph.
     if (scope.upper) pendingScopes.push(scope.upper);
     if (scope.variableScope) pendingScopes.push(scope.variableScope);
     for (let i = 0; i < scope.childScopes.length; i++) pendingScopes.push(scope.childScopes[i]);
@@ -260,6 +268,8 @@ function extractNodesFromRoot(rootNode, opts, phaseTimings) {
   const allNodes = [];
   let startedAt = phaseTimings ? performance.now() : 0;
   let scopes = opts.detailed ? getAllScopes(rootNode) : {};
+  // Project before traversal so every node receives its final compact scope
+  // directly; remapping every node afterward was measurably slower.
   if (opts.detailed && opts.compactScopes) scopes = compactScopeGraph(scopes);
   if (phaseTimings) {
     phaseTimings.scopeAnalysis = performance.now() - startedAt;
@@ -368,6 +378,7 @@ function findDeclarationNodes(references, name) {
  * @param {ASTNode} node
  * @param {ScopeVariableMapByScopeId} scopeVarMaps
  * @param {Map<object, ASTNode[]>} [referenceDeclMap]
+ * @return {void}
  */
 function mapIdentifierRelations(node, scopeVarMaps, referenceDeclMap) {
   // Track references and declarations

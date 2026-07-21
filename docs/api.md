@@ -61,6 +61,18 @@ The main flAST entry point. Returns an ordered flat array of enriched nodes.
 - Default: `true`
 - When `false`, nodes do not store original source slices in `src`
 
+#### `retainTokens?: boolean`
+- Default: `true`
+- When `false`, parser tokens are released after comments are attached
+- Reduces retained AST memory while preserving attached comments; use the default if callers read `ast[0].tokens`
+- Planned breaking-version default: `false`; callers that need `ast[0].tokens` should set `retainTokens: true` explicitly
+
+#### `compactScopes?: boolean`
+- Default: `false`
+- When `true`, replaces the internal `eslint-scope` graph with the documented scope, variable, and reference fields after identifier linking
+- Preserves `scopeId`, `type`, `block`, `upper`, `childScopes`, `variableScope`, variable identifiers, and resolved-reference links
+- Omits undocumented `eslint-scope` internals such as `set` and `through`; leave this disabled if an integration reads those fields
+
 #### `alternateSourceTypeOnFailure?: boolean`
 - Default: `true`
 - Retries parse with `sourceType: 'script'` after a compatible module parse failure
@@ -72,7 +84,9 @@ The main flAST entry point. Returns an ordered flat array of enriched nodes.
 ```js
 const ast = generateFlatAST(code, {
   detailed: true,
+  compactScopes: true,
   includeSrc: true,
+  retainTokens: false,
   alternateSourceTypeOnFailure: true,
 });
 ``` 
@@ -83,8 +97,43 @@ Safe mutation helper for replacing and deleting nodes, then validating the resul
 ### Construction
 ```js
 const arbFromCode = new Arborist(script);
+const memoryEfficientArb = new Arborist(script, {
+  compactScopes: true,
+  retainTokens: false,
+});
 const arbFromAst = new Arborist(generateFlatAST(script));
 ```
+
+Options passed with source code are reused for every validated rebuild.
+
+### Replacement modes
+
+- A **full rebuild** generates source, reparses it, and recreates detailed scope and identifier metadata.
+- A **metadata-reuse rebuild** generates source and reparses the basic AST, but restores verified compact scope metadata instead of running scope analysis again.
+- An **in-place replacement** changes the existing AST without reparsing or rebuilding it. Arborist does not currently perform in-place replacements.
+
+With `compactScopes: true`, a replacement batch is eligible for a metadata-reuse rebuild only when all of these conditions hold:
+
+1. Detailed metadata is enabled and the current AST contains compact scopes.
+2. The batch contains at least one replacement and no deletions.
+3. Every target and replacement is an ESTree `Literal`.
+4. Each replacement remains in the same literal category: string, number, boolean, null, BigInt, or regular expression.
+5. No target is part of a directive prologue, because changing directives can alter strict-mode scope semantics.
+6. Replacement nodes do not introduce new leading or trailing comments.
+7. The metadata snapshot contains scope, ancestry, and lineage information for every node.
+8. After reparsing, node count, node type, `parentKey`, and parent `nodeId` match at every AST-array index.
+
+Failure of any condition uses the full rebuild. Identifiers, bindings, structural changes, directives, comments, deletions, and unknown nodes therefore never use metadata reuse.
+
+### Literal `value` and `raw`
+
+For ordinary string, boolean, null, decimal, hexadecimal, and similar literals, escodegen checks whether `raw` represents `value`; a stale `raw` value is normally ignored. For example, `{value: 2, raw: '1'}` generates `2`.
+
+Do not rely on that behavior for every literal form. BigInt generation uses `bigint`/`raw`, regular-expression generation uses `regex`, and numeric-separator literals can preserve an underscore-containing `raw` string. When changing those literals, update all corresponding fields or remove stale formatting fields where supported.
+
+### Hash behavior
+
+Every successful Arborist replacement updates `arb.script`, regardless of rebuild mode. `applyIteratively()` hashes that generated script after every successful `applyChanges()` call, so metadata reuse does not bypass hash updates. The hash remains unchanged only when the generated source string itself remains unchanged—for example, when stale literal metadata causes the old spelling to be emitted.
 
 ### Important Properties
 - `script`: current generated script

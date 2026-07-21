@@ -3,6 +3,31 @@ import {generateCode, generateFlatAST} from './flast.js';
 
 /** @import {ASTNode, GenerateFlatASTOptions} from './types.d.ts' */
 
+/**
+ * @typedef {object} BatchedDeletionState
+ * @property {Array<ASTNode|symbol|null>} container Mutated sibling container.
+ * @property {Map<ASTNode, number>} indexes Target indexes in the container.
+ * @property {Int32Array|undefined} previous Previous-live-sibling links when comments require them.
+ * @property {Int32Array|undefined} next Next-live-sibling links when comments require them.
+ * @property {number} remaining Number of live entries.
+ */
+
+/**
+ * @typedef {object} CompactMetadataSnapshot
+ * @property {number[][]} ancestries Per-node ancestry IDs.
+ * @property {Int32Array} declarations Per-node declaration IDs, or -1.
+ * @property {number[][]} lineages Per-node scope lineages.
+ * @property {Int32Array} parentIds Per-node parent IDs, or -1.
+ * @property {string[]} parentKeys Per-node structural keys.
+ * @property {Array<number[]|undefined>} references Per-node reference IDs.
+ * @property {Int32Array} scopeIds Per-node declared scope IDs, or -1.
+ * @property {Int32Array} scopeIndexes Per-node indexes into the scope records.
+ * @property {string[]} types Per-node ESTree types.
+ * @property {object[]} scopes Compact scope records.
+ * @property {object[]} variables Compact variable records.
+ * @property {Array<[string, number]>} allScopeEntries Root scope-ID mappings.
+ */
+
 const batchedMutationMinimum = 128;
 const deletedArraySlot = Symbol('deletedArraySlot');
 const scriptParseOptions = {
@@ -10,8 +35,17 @@ const scriptParseOptions = {
   parseOpts: {sourceType: 'script', comment: true, tokens: true},
 };
 
+/**
+ * Rebuild a flat AST while preserving an already-known script source type.
+ * @param {string} script Source code to parse.
+ * @param {string} sourceType Original program source type.
+ * @param {GenerateFlatASTOptions} [options] Flat AST generation options.
+ * @return {ASTNode[]} Rebuilt flat AST.
+ */
 function rebuildFlatAst(script, sourceType, options) {
   if (sourceType !== 'script') return generateFlatAST(script, options);
+  // A known script may contain syntax that is invalid in strict module mode.
+  // Parsing it directly avoids allocating an entire failed module parse first.
   return generateFlatAST(script, {
     ...options,
     ...scriptParseOptions,
@@ -19,6 +53,12 @@ function rebuildFlatAst(script, sourceType, options) {
   });
 }
 
+/**
+ * Build per-container lookup state for large sibling-deletion batches.
+ * @param {ASTNode[]} ast Current flat AST.
+ * @param {number[]} nodeIds IDs queued for deletion.
+ * @return {Map<Array<ASTNode|null>, BatchedDeletionState>} Batched deletion state keyed by parent container.
+ */
 function buildBatchedDeletionStates(ast, nodeIds) {
   const groupedTargets = new Map();
   for (let i = 0; i < nodeIds.length; i++) {
@@ -33,6 +73,8 @@ function buildBatchedDeletionStates(ast, nodeIds) {
 
   const states = new Map();
   for (const [container, indexes] of groupedTargets) {
+    // Small batches are cheaper with indexOf/splice; the auxiliary maps only
+    // repay their allocation cost when many siblings share one container.
     if (indexes.size < batchedMutationMinimum) continue;
     for (let i = 0; i < container.length; i++) {
       if (indexes.has(container[i])) indexes.set(container[i], i);
@@ -47,6 +89,8 @@ function buildBatchedDeletionStates(ast, nodeIds) {
     let previous;
     let next;
     if (needsCommentNeighbors) {
+      // Deletions leave sentinels until final compaction. These links retain
+      // the nearest live comment target without repeatedly scanning siblings.
       previous = new Int32Array(container.length);
       next = new Int32Array(container.length);
       for (let i = 0; i < container.length; i++) {
@@ -60,10 +104,16 @@ function buildBatchedDeletionStates(ast, nodeIds) {
   return states;
 }
 
+/**
+ * Remove deletion sentinels from an array while preserving sparse holes.
+ * @param {Array<ASTNode|symbol|null>} container Mutated child-node container.
+ * @return {void}
+ */
 function compactDeletedSlots(container) {
   let writeIndex = 0;
   for (let readIndex = 0; readIndex < container.length; readIndex++) {
     if (container[readIndex] === deletedArraySlot) continue;
+    // Checking ownership preserves intentional holes in sparse ESTree arrays.
     if (readIndex in container) container[writeIndex] = container[readIndex];
     else delete container[writeIndex];
     writeIndex++;
@@ -71,6 +121,11 @@ function compactDeletedSlots(container) {
   container.length = writeIndex;
 }
 
+/**
+ * Index targets in large sibling-replacement batches.
+ * @param {Array<[ASTNode, ASTNode|object]>} replacements Queued replacements.
+ * @return {Map<Array<ASTNode|null>, Map<ASTNode, number>>} Target indexes keyed by parent container.
+ */
 function buildBatchedReplacementIndexes(replacements) {
   const groupedTargets = new Map();
   for (let i = 0; i < replacements.length; i++) {
@@ -92,6 +147,219 @@ function buildBatchedReplacementIndexes(replacements) {
     }
   }
   return groupedTargets;
+}
+
+const mutationImpact = {
+  valueOnly: 0,
+  expressionStructural: 1,
+  referenceChanging: 2,
+  bindingChanging: 3,
+  commentChanging: 4,
+  unknown: 5,
+};
+
+const bindingNodeTypes = new Set([
+  'ArrayPattern', 'AssignmentPattern', 'CatchClause', 'ClassDeclaration', 'ClassExpression',
+  'ExportAllDeclaration', 'ExportDefaultDeclaration', 'ExportNamedDeclaration', 'FunctionDeclaration',
+  'FunctionExpression', 'ImportDeclaration', 'ImportDefaultSpecifier', 'ImportNamespaceSpecifier',
+  'ImportSpecifier', 'ObjectPattern', 'RestElement', 'VariableDeclaration', 'VariableDeclarator',
+]);
+
+/**
+ * Identify the syntax category of an ESTree Literal.
+ * @param {ASTNode|object} node Literal node.
+ * @return {string} Stable literal category used for conservative classification.
+ */
+function literalCategory(node) {
+  if (node.regex || node.value instanceof RegExp) return 'regexp';
+  if (node.bigint !== undefined || typeof node.value === 'bigint') return 'bigint';
+  if (node.value === null) return 'null';
+  return typeof node.value;
+}
+
+/**
+ * Classify one replacement by the metadata work it may invalidate.
+ * @param {ASTNode} targetNode Existing AST node.
+ * @param {ASTNode|object} replacementNode Queued replacement.
+ * @return {number} Mutation-impact level.
+ */
+function classifyReplacement(targetNode, replacementNode) {
+  if (!targetNode || !replacementNode || typeof replacementNode.type !== 'string') return mutationImpact.unknown;
+  if ((targetNode.leadingComments !== replacementNode.leadingComments && replacementNode.leadingComments?.length) ||
+    (targetNode.trailingComments !== replacementNode.trailingComments && replacementNode.trailingComments?.length)) {
+    return mutationImpact.commentChanging;
+  }
+  if (targetNode.type === 'Literal' && replacementNode.type === 'Literal' &&
+    targetNode.parentNode?.directive === undefined && literalCategory(targetNode) === literalCategory(replacementNode)) {
+    // Directive literals can change strict-mode scope semantics. Matching
+    // categories also excludes values such as negative numbers that reparse
+    // into a different ESTree shape.
+    return mutationImpact.valueOnly;
+  }
+  if (bindingNodeTypes.has(targetNode.type) || bindingNodeTypes.has(replacementNode.type)) {
+    return mutationImpact.bindingChanging;
+  }
+  if (targetNode.type === 'Identifier' || replacementNode.type === 'Identifier') return mutationImpact.referenceChanging;
+  if (targetNode.type === replacementNode.type) return mutationImpact.expressionStructural;
+  return mutationImpact.unknown;
+}
+
+/**
+ * Compute the highest mutation impact in a queued batch.
+ * @param {Array<[ASTNode, ASTNode|object]>} replacements Queued replacements.
+ * @param {number[]} deletions Queued deletion node IDs.
+ * @return {number} Aggregate mutation-impact level.
+ */
+function classifyMutationBatch(replacements, deletions) {
+  if (deletions.length || !replacements.length) return mutationImpact.unknown;
+  let impact = mutationImpact.valueOnly;
+  for (let i = 0; i < replacements.length; i++) {
+    impact = Math.max(impact, classifyReplacement(replacements[i][0], replacements[i][1]));
+  }
+  return impact;
+}
+
+/**
+ * Capture compact detailed metadata without retaining references to AST nodes.
+ * @param {ASTNode[]} ast Current compact-scope flat AST.
+ * @return {CompactMetadataSnapshot|null} ID-based metadata snapshot, or null when metadata cannot be reused.
+ */
+function captureCompactMetadata(ast) {
+  if (!ast[0]?.allScopes) return null;
+  const nodeCount = ast.length;
+  const snapshot = {
+    ancestries: new Array(nodeCount),
+    declarations: new Int32Array(nodeCount).fill(-1),
+    lineages: new Array(nodeCount),
+    parentIds: new Int32Array(nodeCount).fill(-1),
+    parentKeys: new Array(nodeCount),
+    references: new Array(nodeCount),
+    scopeIds: new Int32Array(nodeCount).fill(-1),
+    scopeIndexes: new Int32Array(nodeCount).fill(-1),
+    types: new Array(nodeCount),
+  };
+  const scopeIndexes = new Map();
+  const scopes = [];
+  const pendingScopes = Object.values(ast[0].allScopes);
+  while (pendingScopes.length) {
+    const scope = pendingScopes.pop();
+    if (!scope || scopeIndexes.has(scope)) continue;
+    scopeIndexes.set(scope, scopes.length);
+    scopes.push(scope);
+    // Some function-name/module scopes are intentionally absent from
+    // allScopes but remain necessary through upper/variableScope links.
+    if (scope.upper) pendingScopes.push(scope.upper);
+    if (scope.variableScope) pendingScopes.push(scope.variableScope);
+    for (let i = 0; i < scope.childScopes.length; i++) pendingScopes.push(scope.childScopes[i]);
+  }
+
+  const variableIndexes = new Map();
+  const variables = [];
+  /**
+   * Get or create the snapshot index for a compact scope variable.
+   * @param {object|null|undefined} variable Compact scope variable.
+   * @return {number} Variable record index, or -1 for an unresolved reference.
+   */
+  const getVariableIndex = variable => {
+    if (!variable) return -1;
+    let index = variableIndexes.get(variable);
+    if (index === undefined) {
+      index = variables.length;
+      variableIndexes.set(variable, index);
+      variables.push({
+        identifiers: variable.identifiers.map(identifier => identifier.nodeId),
+        name: variable.name,
+      });
+    }
+    return index;
+  };
+  snapshot.scopes = scopes.map(scope => ({
+    blockId: scope.block.nodeId,
+    childIndexes: scope.childScopes.map(child => scopeIndexes.get(child)),
+    referenceRecords: scope.references.map(reference => [
+      reference.identifier.nodeId,
+      getVariableIndex(reference.resolved),
+    ]),
+    scopeId: scope.scopeId,
+    type: scope.type,
+    upperIndex: scopeIndexes.get(scope.upper) ?? -1,
+    variableIndexes: scope.variables.map(getVariableIndex),
+    variableScopeIndex: scopeIndexes.get(scope.variableScope) ?? -1,
+  }));
+  snapshot.variables = variables;
+  snapshot.allScopeEntries = Object.entries(ast[0].allScopes)
+    .map(([scopeId, scope]) => [scopeId, scopeIndexes.get(scope)]);
+
+  for (let i = 0; i < nodeCount; i++) {
+    const node = ast[i];
+    if (!Array.isArray(node.ancestry) || !Array.isArray(node.lineage) || !node.scope) return null;
+    snapshot.ancestries[i] = node.ancestry;
+    snapshot.lineages[i] = node.lineage;
+    snapshot.parentIds[i] = node.parentNode?.nodeId ?? -1;
+    snapshot.parentKeys[i] = node.parentKey;
+    snapshot.scopeIndexes[i] = scopeIndexes.get(node.scope) ?? -1;
+    snapshot.types[i] = node.type;
+    if (node.scopeId !== undefined) snapshot.scopeIds[i] = node.scopeId;
+    if (node.declNode) snapshot.declarations[i] = node.declNode.nodeId;
+    if (node.references) snapshot.references[i] = node.references.map(reference => reference.nodeId);
+  }
+  // The snapshot contains IDs, strings, and number arrays rather than nodes.
+  // This lets the obsolete cyclic AST become collectible before reparsing.
+  return snapshot;
+}
+
+/**
+ * Validate structural correspondence and restore captured detailed metadata.
+ * @param {CompactMetadataSnapshot|null} snapshot ID-based metadata snapshot.
+ * @param {ASTNode[]} ast Newly parsed basic flat AST.
+ * @return {boolean} Whether validation and metadata restoration succeeded.
+ */
+function applyCompactMetadata(snapshot, ast) {
+  if (!snapshot || snapshot.types.length !== ast.length) return false;
+  for (let i = 0; i < ast.length; i++) {
+    // Equal offsets are not unique, so correspondence is proven with traversal
+    // identity: node order, type, parent key, and parent ID must all agree.
+    if (snapshot.types[i] !== ast[i].type || snapshot.parentKeys[i] !== ast[i].parentKey ||
+      snapshot.parentIds[i] !== (ast[i].parentNode?.nodeId ?? -1)) return false;
+  }
+
+  const variables = snapshot.variables.map(variable => ({
+    identifiers: variable.identifiers.map(nodeId => ast[nodeId]),
+    name: variable.name,
+  }));
+  const scopes = snapshot.scopes.map(scope => ({
+    block: ast[scope.blockId],
+    childScopes: [],
+    scopeId: scope.scopeId,
+    type: scope.type,
+    upper: null,
+    variables: [],
+    references: [],
+  }));
+  // Variables and scope shells are created first so cyclic scope links and
+  // resolved references preserve shared object identity during the second pass.
+  for (let i = 0; i < scopes.length; i++) {
+    const record = snapshot.scopes[i];
+    scopes[i].upper = scopes[record.upperIndex] || null;
+    scopes[i].variableScope = scopes[record.variableScopeIndex];
+    scopes[i].childScopes = record.childIndexes.map(index => scopes[index]);
+    scopes[i].variables = record.variableIndexes.map(index => variables[index]);
+    scopes[i].references = record.referenceRecords.map(([nodeId, variableIndex]) => ({
+      identifier: ast[nodeId],
+      resolved: variables[variableIndex],
+    }));
+  }
+
+  for (let i = 0; i < ast.length; i++) {
+    ast[i].ancestry = [...snapshot.ancestries[i]];
+    ast[i].lineage = [...snapshot.lineages[i]];
+    ast[i].scope = scopes[snapshot.scopeIndexes[i]];
+    if (snapshot.scopeIds[i] !== -1) ast[i].scopeId = snapshot.scopeIds[i];
+    if (snapshot.declarations[i] !== -1) ast[i].declNode = ast[snapshot.declarations[i]];
+    if (snapshot.references[i]) ast[i].references = snapshot.references[i].map(nodeId => ast[nodeId]);
+  }
+  ast[0].allScopes = Object.fromEntries(snapshot.allScopeEntries.map(([scopeId, index]) => [scopeId, scopes[index]]));
+  return true;
 }
 
 /**
@@ -158,6 +426,7 @@ export class Arborist {
 	 * Mark a node for replacement or deletion. This only sets a flag; the AST is not changed until applyChanges() is called.
 	 * @param {ASTNode} targetNode The node to replace or remove.
 	 * @param {object|ASTNode} [replacementNode] If exists, replace the target node with this node.
+	 * @return {void}
 	 */
   markNode(targetNode, replacementNode) {
     let currentNode = targetNode;
@@ -184,6 +453,7 @@ export class Arborist {
 	 * but is clearer at the call site when you are only replacing nodes.
 	 * @param {ASTNode} targetNode The existing node to replace.
 	 * @param {object|ASTNode} replacementNode The node that should replace the target.
+	 * @return {void}
 	 */
   replaceNode(targetNode, replacementNode) {
     return this.markNode(targetNode, replacementNode);
@@ -193,6 +463,7 @@ export class Arborist {
 	 * Queue a node deletion. This is equivalent to markNode(targetNode),
 	 * but is clearer at the call site when you are only deleting nodes.
 	 * @param {ASTNode} targetNode The node to delete.
+	 * @return {void}
 	 */
   deleteNode(targetNode) {
     return this.markNode(targetNode);
@@ -203,6 +474,7 @@ export class Arborist {
 	 * @param {ASTNode|Object} target - The node or array element to receive comments.
 	 * @param {ASTNode} source - The node whose comments should be merged.
 	 * @param {'leadingComments'|'trailingComments'} which
+	 * @return {void}
 	 */
   static mergeComments(target, source, which) {
     if (!source[which] || !source[which].length) return;
@@ -226,8 +498,18 @@ export class Arborist {
     let changesCounter = 0;
     let rootNode = this.ast[0];
     const originalSourceType = rootNode?.sourceType;
+    // Raw eslint-scope objects retain old AST nodes and cannot be remapped
+    // safely. Metadata reuse is therefore restricted to compact scopes.
+    let canReuseDetailedMetadata = this.options.compactScopes === true && this.options.detailed !== false &&
+      classifyMutationBatch(this.replacements, this.markedForDeletion) === mutationImpact.valueOnly;
+    const metadataSnapshot = canReuseDetailedMetadata ? captureCompactMetadata(this.ast) : null;
+    if (!metadataSnapshot) canReuseDetailedMetadata = false;
     let astWasMutated = false;
     let originalScript = this.script;
+    /**
+     * Restore a discarded or mutated AST from its original source.
+     * @return {void}
+     */
     const restoreAst = () => {
       if (!astWasMutated && this.ast.length) return;
       const restoredAst = rebuildFlatAst(originalScript, originalSourceType, this.options);
@@ -358,9 +640,22 @@ export class Arborist {
         // script will remain the same. If it doesn't break, the changes are valid and the script can be marked as modified.
         const updatedSourceType = rootNode?.sourceType || originalSourceType;
         const script = generateCode(rootNode);
+        // Code generation is the last operation that needs the mutated graph.
+        // Release it before allocating the replacement AST to reduce overlap.
         rootNode = null;
         this.ast = [];
-        const ast = rebuildFlatAst(script, updatedSourceType, this.options);
+        let ast;
+        if (canReuseDetailedMetadata) {
+          ast = rebuildFlatAst(script, updatedSourceType, {...this.options, detailed: false});
+          if (!applyCompactMetadata(metadataSnapshot, ast)) {
+            // Do not keep the rejected basic AST alive while allocating the
+            // authoritative full rebuild.
+            ast = [];
+            ast = rebuildFlatAst(script, updatedSourceType, this.options);
+          }
+        } else {
+          ast = rebuildFlatAst(script, updatedSourceType, this.options);
+        }
         if (ast && ast.length) {
           this.ast = ast;
           this.script = script;

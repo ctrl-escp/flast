@@ -446,4 +446,57 @@ describe('Arborist edge case tests', () => {
     assert.ok(Object.values(arb.ast[0].allScopes).every(scope => !('set' in scope) && !('through' in scope)));
     assert.match(arb.script, /keep this comment/);
   });
+
+  it('Reuses compact metadata for safe literal replacements', () => {
+    const code = 'const outer = 1; function read(value) { const local = 2; return outer + value + local; }';
+    const options = {compactScopes: true, retainTokens: false};
+    const arb = new Arborist(code, options);
+    const literal = arb.ast.find(node => node.type === 'Literal' && node.value === 2);
+    arb.replaceNode(literal, {type: 'Literal', value: 3, raw: '3'});
+
+    assert.equal(arb.applyChanges(), 1);
+    const oracle = generateFlatAST(arb.script, options);
+    const summarizeNodes = ast => ast.map(node => ({
+      type: node.type,
+      nodeId: node.nodeId,
+      parentId: node.parentNode?.nodeId,
+      parentKey: node.parentKey,
+      scopeId: node.scope?.scopeId,
+      ancestry: node.ancestry,
+      lineage: node.lineage,
+      declarationId: node.declNode?.nodeId,
+      referenceIds: node.references?.map(reference => reference.nodeId),
+    }));
+    const summarizeScopes = ast => Object.values(ast[0].allScopes).map(scope => ({
+      scopeId: scope.scopeId,
+      type: scope.type,
+      blockId: scope.block.nodeId,
+      upperId: scope.upper?.scopeId,
+      childIds: scope.childScopes.map(child => child.scopeId),
+      variableScopeId: scope.variableScope?.scopeId,
+      variables: scope.variables.map(variable => [
+        variable.name,
+        variable.identifiers.map(identifier => identifier.nodeId),
+      ]),
+      references: scope.references.map(reference => [
+        reference.identifier.nodeId,
+        reference.resolved?.identifiers?.map(identifier => identifier.nodeId),
+      ]),
+    }));
+
+    assert.deepEqual(summarizeNodes(arb.ast), summarizeNodes(oracle));
+    assert.deepEqual(summarizeScopes(arb.ast), summarizeScopes(oracle));
+    assert.ok(arb.ast.every((node, index) => node.nodeId === index && arb.ast[node.nodeId] === node));
+  });
+
+  it('Fully rebuilds metadata for identifier replacements', () => {
+    const arb = new Arborist('let first = 1, second = 2; first;', {compactScopes: true});
+    const reference = arb.ast.find(node => node.type === 'Identifier' && node.name === 'first' && node.declNode);
+    arb.replaceNode(reference, {type: 'Identifier', name: 'second'});
+
+    assert.equal(arb.applyChanges(), 1);
+    const updatedReference = arb.ast.find(node => node.type === 'Identifier' && node.name === 'second' && node.declNode);
+    assert.equal(updatedReference.declNode.name, 'second');
+    assert.equal(updatedReference.parentNode.type, 'ExpressionStatement');
+  });
 });
