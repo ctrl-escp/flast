@@ -1,7 +1,7 @@
 import {logger} from './utils/logger.js';
 import {generateCode, generateFlatAST} from './flast.js';
 
-/** @import {ASTNode} from './types.d.ts' */
+/** @import {ASTNode, GenerateFlatASTOptions} from './types.d.ts' */
 
 const batchedMutationMinimum = 128;
 const deletedArraySlot = Symbol('deletedArraySlot');
@@ -10,9 +10,13 @@ const scriptParseOptions = {
   parseOpts: {sourceType: 'script', comment: true, tokens: true},
 };
 
-function rebuildFlatAst(script, sourceType) {
-  if (sourceType !== 'script') return generateFlatAST(script);
-  return generateFlatAST(script, scriptParseOptions);
+function rebuildFlatAst(script, sourceType, options) {
+  if (sourceType !== 'script') return generateFlatAST(script, options);
+  return generateFlatAST(script, {
+    ...options,
+    ...scriptParseOptions,
+    parseOpts: {...options?.parseOpts, ...scriptParseOptions.parseOpts},
+  });
 }
 
 function buildBatchedDeletionStates(ast, nodeIds) {
@@ -96,18 +100,20 @@ function buildBatchedReplacementIndexes(replacements) {
  */
 export class Arborist {
   /**
-	 * @param {string|ASTNode[]} scriptOrFlatAstArr - The target script or a flat AST array.
+   * @param {string|ASTNode[]} scriptOrFlatAstArr - The target script or a flat AST array.
+   * @param {GenerateFlatASTOptions} [options] Flat AST generation options used for construction and rebuilds.
 	 */
-  constructor(scriptOrFlatAstArr) {
+  constructor(scriptOrFlatAstArr, options = {}) {
     this.script                = '';
     this.ast                   = [];
     this.markedForDeletion     = [];  // Array of node ids.
     this.appliedCounter        = 0;   // Track the number of times changes were applied.
     this.replacements          = [];
+    this.options               = options;
     this.logger = logger;
     if (typeof scriptOrFlatAstArr === 'string') {
       this.script = scriptOrFlatAstArr;
-      this.ast = generateFlatAST(scriptOrFlatAstArr);
+      this.ast = generateFlatAST(scriptOrFlatAstArr, options);
     } else if (Array.isArray(scriptOrFlatAstArr)) {
       this.ast = scriptOrFlatAstArr;
     } else throw Error('Undetermined argument');
@@ -224,7 +230,7 @@ export class Arborist {
     let originalScript = this.script;
     const restoreAst = () => {
       if (!astWasMutated) return;
-      const restoredAst = rebuildFlatAst(originalScript, originalSourceType);
+      const restoredAst = rebuildFlatAst(originalScript, originalSourceType, this.options);
       if (restoredAst.length) this.ast = restoredAst;
     };
     try {
@@ -351,7 +357,7 @@ export class Arborist {
         // If any of the changes made will break the script the next line will fail and the
         // script will remain the same. If it doesn't break, the changes are valid and the script can be marked as modified.
         const script = generateCode(rootNode);
-        const ast = rebuildFlatAst(script, rootNode?.sourceType || originalSourceType);
+        const ast = rebuildFlatAst(script, rootNode?.sourceType || originalSourceType, this.options);
         if (ast && ast.length) {
           this.ast = ast;
           this.script = script;

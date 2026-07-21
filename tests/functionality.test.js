@@ -87,6 +87,15 @@ describe('Functionality tests', () => {
     const detailedNoSrcAst = generateFlatAST(code, {detailed: true, includeSrc: false});
     assert.equal(detailedNoSrcAst[0].src, undefined, 'Flat AST includes details despite \'detailed\' option set to true and \'includeSrc\' option set to false.');
   });
+  it('Can release parser tokens after attaching comments', () => {
+    const code = '// keep this comment\nconst value = 1;';
+    const defaultAst = generateFlatAST(code);
+    const compactAst = generateFlatAST(code, {retainTokens: false});
+
+    assert.ok(defaultAst[0].tokens.length > 0, 'Tokens should remain available by default.');
+    assert.equal(compactAst[0].tokens, undefined, 'Tokens should be released when retainTokens is false.');
+    assert.match(generateCode(compactAst[0]), /keep this comment/);
+  });
   it('Verify a script is parsed in "sloppy mode" if strict mode is restricting parsing', () => {
     const code = 'let a; delete a;';
     let ast = [];

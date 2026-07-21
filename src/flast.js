@@ -3,7 +3,7 @@ import {analyze} from 'eslint-scope';
 import {logger} from './utils/logger.js';
 import {generate, attachComments} from 'escodegen';
 
-/** @import {ASTAllScopes, ASTNode, ASTRootNode, GenerateCodeOptions, GenerateFlatASTOptions, ParseCodeOptions, ScopeVariableMapByScopeId} from './types.d.ts' */
+/** @import {ASTAllScopes, ASTNode, ASTRootNode, ASTTypeMap, GenerateCodeOptions, GenerateFlatASTOptions, ParseCodeOptions, ScopeVariableMapByScopeId} from './types.d.ts' */
 
 const ecmaVersion = 'latest';
 const currentYear = (new Date()).getFullYear();
@@ -30,6 +30,8 @@ const generateFlatASTDefaultOptions = {
   detailed: true,
   // If false, do not include node src
   includeSrc: true,
+  // If false, release parser tokens after comments have been attached
+  retainTokens: true,
   // Retry to parse the code with sourceType: 'script' if 'module' failed with 'strict' error message
   alternateSourceTypeOnFailure: true,
   // Options for the espree parser
@@ -90,12 +92,14 @@ function generateRootNode(inputCode, opts = {}) {
   try {
     rootNode = parseCode(inputCode, parseOpts);
     if (opts.includeSrc) rootNode.src = inputCode;
+    if (!opts.retainTokens) delete rootNode.tokens;
   } catch (e) {
     // If any parse error occurs and alternateSourceTypeOnFailure is set, try 'script' mode
     if (opts.alternateSourceTypeOnFailure) {
       try {
         rootNode = parseCode(inputCode, {...parseOpts, sourceType: 'script'});
         if (opts.includeSrc) rootNode.src = inputCode;
+        if (!opts.retainTokens) delete rootNode.tokens;
       } catch (e2) {
         logger.debug('Failed to parse as module and script:', e, e2);
       }
@@ -114,7 +118,7 @@ function generateRootNode(inputCode, opts = {}) {
  * @param {ASTNode} node
  * @return {ASTNode}
  */
-function parseNode (opts, rootNode, scopes, nodeId, node) {
+function indexNode(opts, rootNode, scopes, nodeId, node) {
   const children = [];
   let childrenAreOrdered = true;
   let previousStart = -1;
@@ -173,23 +177,40 @@ function parseNode (opts, rootNode, scopes, nodeId, node) {
 }
 
 /**
+ * @param {ASTTypeMap} typeMap
+ * @param {ASTAllScopes} scopes
+ */
+function linkIdentifierRelations(typeMap, scopes) {
+  const identifiers = typeMap.Identifier || [];
+  const referenceDeclMap = new Map();
+  const scopeVarMaps = buildScopeVarMaps(scopes, referenceDeclMap);
+  for (let i = 0; i < identifiers.length; i++) {
+    mapIdentifierRelations(identifiers[i], scopeVarMaps, referenceDeclMap);
+  }
+}
+
+/**
  * @param {ASTRootNode} rootNode
  * @param {GenerateFlatASTOptions} [opts]
+ * @param {Record<string, number>} [phaseTimings] Internal benchmark timings.
  * @return {ASTNode[]}
  */
-function extractNodesFromRoot(rootNode, opts) {
+function extractNodesFromRoot(rootNode, opts, phaseTimings) {
   opts = {...generateFlatASTDefaultOptions, ...opts};
-  const typeMap = {
-    typeList: [],   // A quick way to get all the unique types of nodes that were parsed
-  };
+  const typeMap = {typeList: []};
   const allNodes = [];
+  let startedAt = phaseTimings ? performance.now() : 0;
   const scopes = opts.detailed ? getAllScopes(rootNode) : {};
+  if (phaseTimings) {
+    phaseTimings.scopeAnalysis = performance.now() - startedAt;
+    startedAt = performance.now();
+  }
 
   const parents = [];
   const nextChildIndexes = [];
   let visitor = rootNode;
   while (visitor) {
-    allNodes.push(parseNode(opts, rootNode, scopes, allNodes.length, visitor));
+    allNodes.push(indexNode(opts, rootNode, scopes, allNodes.length, visitor));
     if (!typeMap[visitor.type]) {
       typeMap[visitor.type] = [];
       typeMap.typeList.push(visitor.type);
@@ -223,14 +244,14 @@ function extractNodesFromRoot(rootNode, opts) {
       }
     }
   }
+  if (phaseTimings) {
+    phaseTimings.flatteningAndDecoration = performance.now() - startedAt;
+    startedAt = performance.now();
+  }
 
-  if (opts.detailed) {
-    const identifiers = typeMap.Identifier || [];
-    const referenceDeclMap = new Map();
-    const scopeVarMaps = buildScopeVarMaps(scopes, referenceDeclMap);
-    for (let i = 0; i < identifiers.length; i++) {
-      mapIdentifierRelations(identifiers[i], scopeVarMaps, referenceDeclMap);
-    }
+  if (opts.detailed) linkIdentifierRelations(typeMap, scopes);
+  if (phaseTimings) {
+    phaseTimings.identifierLinking = performance.now() - startedAt;
   }
   if (allNodes?.length) {
     allNodes[0].typeMap = new Proxy(typeMap, {

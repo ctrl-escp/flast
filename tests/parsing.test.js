@@ -1,6 +1,6 @@
 import assert from 'node:assert';
 import {describe, it} from 'node:test';
-import {extractNodesFromRoot, generateFlatAST, generateCode} from '../src/index.js';
+import {extractNodesFromRoot, generateFlatAST, generateCode, parseCode} from '../src/index.js';
 
 describe('Parsing tests', () => {
   it('Verify the function-expression-name scope is always replaced with its child scope', () => {
@@ -138,6 +138,33 @@ describe('Parsing tests', () => {
         assert.equal(ast[node.nodeId], node, `nodeId ${node.nodeId} does not resolve to the same node`);
       });
     }
+  });
+  it('Verify benchmark phase timing does not change extraction results', () => {
+    const code = 'const outer = 1; function read(value) { return outer + value; }';
+    const options = {detailed: true, includeSrc: true};
+    const rootNode = parseCode(code, {sourceType: 'module', comment: true, tokens: true});
+    const timedRootNode = parseCode(code, {sourceType: 'module', comment: true, tokens: true});
+    rootNode.src = code;
+    timedRootNode.src = code;
+    const expected = extractNodesFromRoot(rootNode, options);
+    const timings = {};
+    const actual = extractNodesFromRoot(timedRootNode, options, timings);
+    const summarize = ast => ast.map(node => ({
+      type: node.type,
+      nodeId: node.nodeId,
+      parentId: node.parentNode?.nodeId,
+      ancestry: node.ancestry,
+      lineage: node.lineage,
+      src: node.src,
+      declarationId: node.declNode?.nodeId,
+      referenceIds: node.references?.map(reference => reference.nodeId),
+    }));
+
+    assert.deepEqual(summarize(actual), summarize(expected));
+    assert.ok(actual.every((node, index) => node.nodeId === index && actual[node.nodeId] === node));
+    assert.ok(timings.scopeAnalysis >= 0);
+    assert.ok(timings.flatteningAndDecoration >= 0);
+    assert.ok(timings.identifierLinking >= 0);
   });
   it('Verify the module scope is ignored', () => {
     const code = 'function a() {return [1];}\nconst b = a();';

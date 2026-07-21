@@ -421,4 +421,15 @@ describe('Arborist edge case tests', () => {
     assert.equal(arb.ast[0].sourceType, 'script');
     assert.match(arb.script, /value = 2/);
   });
+
+  it('Preserves token retention options across rebuilds', () => {
+    const arb = new Arborist('// keep this comment\nconst value = 1;', {retainTokens: false});
+    const literal = arb.ast.find(node => node.type === 'Literal');
+    assert.equal(arb.ast[0].tokens, undefined);
+    arb.replaceNode(literal, {type: 'Literal', value: 2, raw: '2'});
+
+    assert.equal(arb.applyChanges(), 1);
+    assert.equal(arb.ast[0].tokens, undefined);
+    assert.match(arb.script, /keep this comment/);
+  });
 });

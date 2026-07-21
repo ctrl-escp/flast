@@ -5,6 +5,7 @@ export type ParseCodeOptions = EspreeOptions;
 export interface GenerateFlatASTOptions {
   detailed?: boolean;
   includeSrc?: boolean;
+  retainTokens?: boolean;
   alternateSourceTypeOnFailure?: boolean;
   parseOpts?: ParseCodeOptions;
 }
@@ -172,9 +173,10 @@ export class Arborist {
   markedForDeletion: number[];
   appliedCounter: number;
   replacements: Array<[ASTNode, ASTNode | object]>;
+  options: GenerateFlatASTOptions;
   logger: typeof logger;
 
-  constructor(scriptOrFlatAstArr: string | ASTNode[]);
+  constructor(scriptOrFlatAstArr: string | ASTNode[], options?: GenerateFlatASTOptions);
   _getCorrectTargetForDeletion(startNode: ASTNode): ASTNode;
   getNumberOfChanges(): number;
   markNode(targetNode: ASTNode, replacementNode?: ASTNode | object): void;
