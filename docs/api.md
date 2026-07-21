@@ -155,6 +155,9 @@ Every successful Arborist replacement updates `arb.script`, regardless of rebuil
 - Low-level queueing primitive used by the convenience helpers below
 - Marks a node for replacement when `replacementNode` is provided
 - Marks a node for deletion when omitted
+- Ignores a target when that node or one of its ancestors is already marked
+- Allows any number of sibling targets, including adjacent children of the same array
+- Distinguishes replacement marks from deletion marks when deciding whether a removable parent can be deleted
 
 #### `replaceNode(targetNode, replacementNode)`
 - Queues a replacement without relying on an optional second argument
@@ -169,6 +172,7 @@ Every successful Arborist replacement updates `arb.script`, regardless of rebuil
 
 #### `applyChanges()`
 - Applies queued replacements/deletions
+- Groups large sibling batches and ordered adjacent replacement runs by their parent array
 - Regenerates code
 - Reparses the result
 - Reverts if the generated code is invalid

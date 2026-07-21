@@ -322,6 +322,22 @@ describe('Arborist edge case tests', () => {
     assert.equal(arb.script, expected);
   });
 
+  it('Does not treat a replaced declarator as a deleted declarator', () => {
+    const arb = new Arborist('let a = 1, b = 2;');
+    const aDecl = arb.ast.find(n => n.type === 'VariableDeclarator' && n.id.name === 'a');
+    const bDecl = arb.ast.find(n => n.type === 'VariableDeclarator' && n.id.name === 'b');
+
+    arb.replaceNode(aDecl, {
+      type: 'VariableDeclarator',
+      id: {type: 'Identifier', name: 'a'},
+      init: {type: 'Literal', value: 10, raw: '10'},
+    });
+    arb.deleteNode(bDecl);
+
+    assert.equal(arb.applyChanges(), 2);
+    assert.equal(arb.script, 'let a = 10;');
+  });
+
   it('Deeply nested node replacement', () => {
     const code = 'if (a) { if (b) { c(); } }';
     const expected = `if (a) {
@@ -449,6 +465,18 @@ describe('Arborist edge case tests', () => {
     assert.equal(arb.ast[0].body.length, 200);
     assert.ok(arb.ast[0].body.slice(0, 160).every(node => node.type === 'EmptyStatement'));
     for (let i = 0; i < 160; i++) assert.ok(arb.script.includes(`// comment-${i}`));
+  });
+
+  it('Indexes medium ordered runs of adjacent sibling replacements', () => {
+    const code = Array.from({length: 48}, (_, i) => `call(${i});`).join('\n');
+    const arb = new Arborist(code);
+    const replacedStatements = arb.ast[0].body.slice(16, 48);
+    for (const statement of replacedStatements) arb.replaceNode(statement, {type: 'EmptyStatement'});
+
+    assert.equal(arb.applyChanges(), 32);
+    assert.equal(arb.ast[0].body.length, 48);
+    assert.ok(arb.ast[0].body.slice(0, 16).every(node => node.type === 'ExpressionStatement'));
+    assert.ok(arb.ast[0].body.slice(16).every(node => node.type === 'EmptyStatement'));
   });
 
   it('Preserves sparse array holes during batched deletions', () => {

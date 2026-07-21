@@ -30,6 +30,9 @@ import {generateCode, generateFlatAST} from './flast.js';
  */
 
 const batchedMutationMinimum = 128;
+// Below the large-batch cutoff, enough adjacent targets must share the scan
+// before temporary index bookkeeping reliably repays its fixed cost.
+const adjacentReplacementMinimum = 16;
 const deletedArraySlot = Symbol('deletedArraySlot');
 const scriptParseOptions = {
   alternateSourceTypeOnFailure: false,
@@ -141,8 +144,25 @@ function buildBatchedReplacementIndexes(replacements) {
   }
 
   for (const [container, indexes] of groupedTargets) {
-    if (indexes.size < batchedMutationMinimum) {
+    if (indexes.size < adjacentReplacementMinimum) {
       groupedTargets.delete(container);
+      continue;
+    }
+    if (indexes.size < batchedMutationMinimum) {
+      let expectedIndex = -1;
+      let isAdjacent = true;
+      for (const targetNode of indexes.keys()) {
+        if (expectedIndex === -1) expectedIndex = container.indexOf(targetNode);
+        // Callers commonly queue a slice of an ESTree child array in order.
+        // Recognizing that run avoids one linear indexOf() scan per target,
+        // while retaining the cheaper existing path for scattered edits.
+        if (expectedIndex === -1 || container[expectedIndex] !== targetNode) {
+          isAdjacent = false;
+          break;
+        }
+        indexes.set(targetNode, expectedIndex++);
+      }
+      if (!isAdjacent) groupedTargets.delete(container);
       continue;
     }
     for (let i = 0; i < container.length; i++) {
@@ -438,7 +458,9 @@ export class Arborist {
         canRemoveParent = true;
         for (let i = 0; i < parent.declarations.length; i++) {
           const declaration = parent.declarations[i];
-          if (declaration !== currentNode && !declaration.isMarked) {
+          // A replacement leaves its declarator present, so only siblings
+          // actually queued for deletion make the declaration removable.
+          if (declaration !== currentNode && !declaration.isMarkedForDeletion) {
             canRemoveParent = false;
             break;
           }
@@ -480,6 +502,7 @@ export class Arborist {
       else if (!targetNode.isMarked) {
         this.markedForDeletion.push(targetNode.nodeId);
         targetNode.isMarked = true;
+        targetNode.isMarkedForDeletion = true;
       }
     }
   }

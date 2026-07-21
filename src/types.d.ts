@@ -108,6 +108,7 @@ export interface ASTNode {
   innerComments?: object[];
   isEmpty?: boolean;
   isMarked?: boolean;
+  isMarkedForDeletion?: boolean;
   key?: ASTNode | null;
   kind?: string;
   label?: ASTNode | null;
