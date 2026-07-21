@@ -1,4 +1,4 @@
-import {parse} from 'espree';
+import {parse, VisitorKeys} from 'espree';
 import {analyze} from 'eslint-scope';
 import {logger} from './utils/logger.js';
 import {generate, attachComments} from 'escodegen';
@@ -120,10 +120,11 @@ function parseNode (opts, rootNode, scopes, nodeId, node) {
   let previousStart = -1;
   node.parentKey = node.parentKey || '';	// Make sure parentKey exists
   // Iterate over all keys of the node to find child nodes
-  const keys = Object.keys(node);
+  const visitorKeys = VisitorKeys[node.type];
+  const keys = visitorKeys || Object.keys(node);
   for (let i = 0; i < keys.length; i++) {
     const key = keys[i];
-    if (excludedParentKeys.has(key)) continue;
+    if (!visitorKeys && excludedParentKeys.has(key)) continue;
     const content = node[key];
     if (content && typeof content === 'object') {
       // Sort each child node by its start position
@@ -225,9 +226,10 @@ function extractNodesFromRoot(rootNode, opts) {
 
   if (opts.detailed) {
     const identifiers = typeMap.Identifier || [];
-    const scopeVarMaps = buildScopeVarMaps(scopes);
+    const referenceDeclMap = new Map();
+    const scopeVarMaps = buildScopeVarMaps(scopes, referenceDeclMap);
     for (let i = 0; i < identifiers.length; i++) {
-      mapIdentifierRelations(identifiers[i], scopeVarMaps);
+      mapIdentifierRelations(identifiers[i], scopeVarMaps, referenceDeclMap);
     }
   }
   if (allNodes?.length) {
@@ -246,9 +248,10 @@ function extractNodesFromRoot(rootNode, opts) {
 /**
  * Precompute a map of variable names to declarations for each scope for fast lookup.
  * @param {ASTAllScopes} scopes
+ * @param {Map<object, ASTNode[]>} [referenceDeclMap]
  * @return {ScopeVariableMapByScopeId} Map of scopeId to { [name]: variable }
  */
-function buildScopeVarMaps(scopes) {
+function buildScopeVarMaps(scopes, referenceDeclMap) {
   const scopeVarMaps = {};
   for (const scopeId in scopes) {
     const scope = scopes[scopeId];
@@ -257,16 +260,35 @@ function buildScopeVarMaps(scopes) {
       const v = scope.variables[i];
       varMap[v.name] = v;
     }
+    if (referenceDeclMap) {
+      for (let i = 0; i < scope.references.length; i++) {
+        const reference = scope.references[i];
+        referenceDeclMap.set(reference.identifier, reference.resolved?.identifiers || []);
+      }
+    }
     scopeVarMaps[scopeId] = varMap;
   }
   return scopeVarMaps;
 }
 
 /**
+ * @param {object[]} references
+ * @param {string} name
+ * @return {ASTNode[]|undefined}
+ */
+function findDeclarationNodes(references, name) {
+  for (let i = 0; i < references.length; i++) {
+    if (references[i].identifier.name === name) return references[i].resolved?.identifiers || [];
+  }
+  return undefined;
+}
+
+/**
  * @param {ASTNode} node
  * @param {ScopeVariableMapByScopeId} scopeVarMaps
+ * @param {Map<object, ASTNode[]>} [referenceDeclMap]
  */
-function mapIdentifierRelations(node, scopeVarMaps) {
+function mapIdentifierRelations(node, scopeVarMaps, referenceDeclMap) {
   // Track references and declarations
   // Prevent assigning declNode to member expression properties or object keys
   if (node.type === 'Identifier' && !(!node.parentNode.computed && ['property', 'key'].includes(node.parentKey))) {
@@ -278,15 +300,17 @@ function mapIdentifierRelations(node, scopeVarMaps) {
     } else {
       // Find declaration by finding the closest declaration of the same name.
       let decls = [];
-      if (variable) {
+      const directDecls = referenceDeclMap?.get(node);
+      if (directDecls !== undefined) {
+        decls = directDecls;
+      } else if (variable) {
         decls = variable.identifiers || [];
-      } else if (scope && (scope.references.length || scope.variableScope?.references.length)) {
-        const references = [...(scope.references || []), ...(scope.variableScope?.references || [])];
-        for (let i = 0; i < references.length; i++) {
-          if (references[i].identifier.name === node.name) {
-            decls = references[i].resolved?.identifiers || [];
-            break;
-          }
+      } else if (scope) {
+        const scopeDecls = findDeclarationNodes(scope.references || [], node.name);
+        if (scopeDecls !== undefined) {
+          decls = scopeDecls;
+        } else if (scope.variableScope && scope.variableScope !== scope) {
+          decls = findDeclarationNodes(scope.variableScope.references || [], node.name) || [];
         }
       }
       let declNode = decls[0];

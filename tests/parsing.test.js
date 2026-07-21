@@ -33,6 +33,25 @@ describe('Parsing tests', () => {
     assert.equal(innerValResult, innerScopeVal, 'Declaration node (inner scope) is incorrectly referenced.');
     assert.equal(outerValResult, outerScopeVal, 'Declaration node (outer scope) is incorrectly referenced.');
   });
+  it('Verify repeated references resolve declarations from an outer scope', () => {
+    const ast = generateFlatAST('const outer = 1; function read() { return outer + outer; }');
+    const declaration = ast.find(n => n.type === 'Identifier' && n.name === 'outer' && n.parentKey === 'id');
+    const references = ast.filter(n => n.type === 'Identifier' && n.name === 'outer' && n.declNode);
+
+    assert.equal(references.length, 2);
+    assert.ok(references.every(node => node.declNode === declaration));
+    assert.deepEqual(declaration.references, references);
+  });
+  it('Verify distinct references resolve declarations from an outer scope', () => {
+    const ast = generateFlatAST('const first = 1, second = 2; function read() { return first + second; }');
+    const declarations = new Map(ast
+      .filter(n => n.type === 'Identifier' && n.parentKey === 'id')
+      .map(n => [n.name, n]));
+    const references = ast.filter(n => n.type === 'Identifier' && ['first', 'second'].includes(n.name) && n.declNode);
+
+    assert.equal(references.length, 2);
+    assert.ok(references.every(node => node.declNode === declarations.get(node.name)));
+  });
   it('Verify a function\'s identifier isn\'t treated as a reference', () => {
     const code = `function a() {
 			var a;
@@ -222,6 +241,20 @@ describe('Parsing tests', () => {
     assert.ok(ast.every(n => typeof n.type === 'string'), 'A flattened item is not an AST node');
     assert.deepEqual(ast[0].loc.start, {line: 1, column: 0});
   });
+  it('Verify unknown node types use reflective child discovery', () => {
+    const rootNode = {
+      type: 'CustomRoot',
+      start: 0,
+      end: 1,
+      payload: {type: 'Identifier', name: 'value', start: 0, end: 1},
+    };
+
+    const ast = extractNodesFromRoot(rootNode, {detailed: false, includeSrc: false});
+
+    assert.deepEqual(ast.map(node => node.type), ['CustomRoot', 'Identifier']);
+    assert.equal(ast[1].parentNode, ast[0]);
+    assert.equal(ast[1].parentKey, 'payload');
+  });
   it('Verify large flat scripts do not overflow traversal', () => {
     const stmt = 'var x = 1;\n';
     const code = stmt.repeat(Math.ceil((2 * 1024 * 1024) / stmt.length));
@@ -237,8 +270,11 @@ describe('Parsing tests', () => {
   it('Verify deeply nested ASTs do not overflow traversal', () => {
     const depth = 20000;
     const rootNode = {type: 'Program', start: 0, end: 0, sourceType: 'script', body: []};
-    let currentNode = rootNode;
-    for (let i = 0; i < depth; i++) {
+    const expressionStatement = {type: 'ExpressionStatement', start: 0, end: 0};
+    rootNode.body.push(expressionStatement);
+    expressionStatement.expression = {type: 'UnaryExpression', start: 0, end: 0, operator: '!', prefix: true};
+    let currentNode = expressionStatement.expression;
+    for (let i = 1; i < depth; i++) {
       const child = {type: 'UnaryExpression', start: 0, end: 0, operator: '!', prefix: true};
       currentNode.argument = child;
       currentNode = child;
@@ -246,8 +282,8 @@ describe('Parsing tests', () => {
 
     const ast = extractNodesFromRoot(rootNode, {detailed: false, includeSrc: false});
 
-    assert.equal(ast.length, depth + 1);
-    assert.equal(ast.at(-1).nodeId, depth);
+    assert.equal(ast.length, depth + 2);
+    assert.equal(ast.at(-1).nodeId, depth + 1);
     assert.ok(ast.every((node, index) => node.nodeId === index));
   });
   it('Verify all identifiers are referenced correctly', () => {
