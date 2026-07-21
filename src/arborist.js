@@ -165,6 +165,13 @@ const bindingNodeTypes = new Set([
   'ImportSpecifier', 'ObjectPattern', 'RestElement', 'VariableDeclaration', 'VariableDeclarator',
 ]);
 
+const reusableOperatorChildKeys = {
+  AssignmentExpression: ['left', 'right'],
+  BinaryExpression: ['left', 'right'],
+  LogicalExpression: ['left', 'right'],
+  UpdateExpression: ['argument'],
+};
+
 /**
  * Identify the syntax category of an ESTree Literal.
  * @param {ASTNode|object} node Literal node.
@@ -175,6 +182,25 @@ function literalCategory(node) {
   if (node.bigint !== undefined || typeof node.value === 'bigint') return 'bigint';
   if (node.value === null) return 'null';
   return typeof node.value;
+}
+
+/**
+ * Verify that an operator replacement retains the exact operand subtrees.
+ * @param {ASTNode} targetNode Existing expression node.
+ * @param {ASTNode|object} replacementNode Replacement expression node.
+ * @return {boolean} Whether only operator-level fields can affect generated syntax.
+ */
+function hasReusableOperatorChildren(targetNode, replacementNode) {
+  if (targetNode.type !== replacementNode.type || typeof replacementNode.operator !== 'string') return false;
+  const childKeys = reusableOperatorChildKeys[targetNode.type];
+  if (!childKeys) return false;
+  // Requiring object identity prevents a replacement from smuggling changed
+  // identifiers or bindings into an otherwise whitelisted expression type.
+  for (let i = 0; i < childKeys.length; i++) {
+    const key = childKeys[i];
+    if (targetNode[key] !== replacementNode[key]) return false;
+  }
+  return true;
 }
 
 /**
@@ -189,18 +215,21 @@ function classifyReplacement(targetNode, replacementNode) {
     (targetNode.trailingComments !== replacementNode.trailingComments && replacementNode.trailingComments?.length)) {
     return mutationImpact.commentChanging;
   }
-  if (targetNode.type === 'Literal' && replacementNode.type === 'Literal' &&
-    targetNode.parentNode?.directive === undefined && literalCategory(targetNode) === literalCategory(replacementNode)) {
+  if (targetNode.type === 'Literal' && replacementNode.type === 'Literal') {
     // Directive literals can change strict-mode scope semantics. Matching
     // categories also excludes values such as negative numbers that reparse
     // into a different ESTree shape.
-    return mutationImpact.valueOnly;
+    if (targetNode.parentNode?.directive !== undefined) return mutationImpact.unknown;
+    return literalCategory(targetNode) === literalCategory(replacementNode) ?
+      mutationImpact.valueOnly : mutationImpact.unknown;
+  }
+  if (hasReusableOperatorChildren(targetNode, replacementNode)) {
+    return mutationImpact.expressionStructural;
   }
   if (bindingNodeTypes.has(targetNode.type) || bindingNodeTypes.has(replacementNode.type)) {
     return mutationImpact.bindingChanging;
   }
   if (targetNode.type === 'Identifier' || replacementNode.type === 'Identifier') return mutationImpact.referenceChanging;
-  if (targetNode.type === replacementNode.type) return mutationImpact.expressionStructural;
   return mutationImpact.unknown;
 }
 
@@ -501,7 +530,7 @@ export class Arborist {
     // Raw eslint-scope objects retain old AST nodes and cannot be remapped
     // safely. Metadata reuse is therefore restricted to compact scopes.
     let canReuseDetailedMetadata = this.options.compactScopes === true && this.options.detailed !== false &&
-      classifyMutationBatch(this.replacements, this.markedForDeletion) === mutationImpact.valueOnly;
+      classifyMutationBatch(this.replacements, this.markedForDeletion) <= mutationImpact.expressionStructural;
     const metadataSnapshot = canReuseDetailedMetadata ? captureCompactMetadata(this.ast) : null;
     if (!metadataSnapshot) canReuseDetailedMetadata = false;
     let astWasMutated = false;

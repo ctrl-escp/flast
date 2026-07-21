@@ -110,20 +110,25 @@ Options passed with source code are reused for every validated rebuild.
 
 - A **full rebuild** generates source, reparses it, and recreates detailed scope and identifier metadata.
 - A **metadata-reuse rebuild** generates source and reparses the basic AST, but restores verified compact scope metadata instead of running scope analysis again.
-- An **in-place replacement** changes the existing AST without reparsing or rebuilding it. Arborist does not currently perform in-place replacements.
+
+Arborist always regenerates source and reparses an AST after successful mutations. The optimization changes how much metadata must be recomputed; it does not skip rebuilding the structural AST.
 
 With `compactScopes: true`, a replacement batch is eligible for a metadata-reuse rebuild only when all of these conditions hold:
 
 1. Detailed metadata is enabled and the current AST contains compact scopes.
 2. The batch contains at least one replacement and no deletions.
-3. Every target and replacement is an ESTree `Literal`.
-4. Each replacement remains in the same literal category: string, number, boolean, null, BigInt, or regular expression.
-5. No target is part of a directive prologue, because changing directives can alter strict-mode scope semantics.
-6. Replacement nodes do not introduce new leading or trailing comments.
-7. The metadata snapshot contains scope, ancestry, and lineage information for every node.
-8. After reparsing, node count, node type, `parentKey`, and parent `nodeId` match at every AST-array index.
+3. Every replacement is one of these explicitly supported forms:
+   - A `Literal` that remains in the same category: string, number, boolean, null, BigInt, or regular expression.
+   - A `BinaryExpression` operator change with the exact same `left` and `right` node objects.
+   - A `LogicalExpression` operator change with the exact same `left` and `right` node objects.
+   - An `AssignmentExpression` operator change with the exact same `left` and `right` node objects.
+   - An `UpdateExpression` operator or prefix change with the exact same `argument` node object.
+4. No target is part of a directive prologue, because changing directives can alter strict-mode scope semantics.
+5. Replacement nodes do not introduce new leading or trailing comments.
+6. The metadata snapshot contains scope, ancestry, and lineage information for every node.
+7. After reparsing, node count, node type, `parentKey`, and parent `nodeId` match at every AST-array index.
 
-Failure of any condition uses the full rebuild. Identifiers, bindings, structural changes, directives, comments, deletions, and unknown nodes therefore never use metadata reuse.
+Operand identity is required so an operator replacement cannot introduce changed identifiers or bindings under an otherwise approved expression type. Failure of any condition uses the full rebuild. Identifiers, bindings, other structural changes, directives, comments, deletions, and unknown nodes therefore never use metadata reuse.
 
 ### Literal `value` and `raw`
 

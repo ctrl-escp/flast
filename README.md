@@ -326,7 +326,7 @@ console.log(applyIteratively('const x = 1 + 2 + 3;', [foldSimpleMath]));
 - Treat `detailed: false` as a performance mode for cases where you do not need scope or identifier metadata.
 - Use `retainTokens: false` when attached comments are needed but callers do not inspect `ast[0].tokens`; Arborist preserves this option across rebuilds.
 - Use `compactScopes: true` when callers only need flAST's documented scope relationships, not additional `eslint-scope` internals such as `set` or `through`.
-- Arborist can reuse compact scope metadata for verified same-category literal replacements; it still reparses the basic AST, so this is a metadata-reuse rebuild rather than an in-place replacement. Every other mutation falls back to full scope analysis.
+- Arborist can reuse compact scope metadata for verified literal and operator-only replacements. It always regenerates source and reparses the structural AST; unsupported mutations fall back to full scope analysis.
 
 ## Structure Detection Use Cases
 flAST works especially well for identifying repeated code structures such as:
