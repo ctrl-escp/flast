@@ -6,6 +6,7 @@ export interface GenerateFlatASTOptions {
   detailed?: boolean;
   includeSrc?: boolean;
   retainTokens?: boolean;
+  compactScopes?: boolean;
   alternateSourceTypeOnFailure?: boolean;
   parseOpts?: ParseCodeOptions;
 }

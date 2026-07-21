@@ -229,7 +229,7 @@ export class Arborist {
     let astWasMutated = false;
     let originalScript = this.script;
     const restoreAst = () => {
-      if (!astWasMutated) return;
+      if (!astWasMutated && this.ast.length) return;
       const restoredAst = rebuildFlatAst(originalScript, originalSourceType, this.options);
       if (restoredAst.length) this.ast = restoredAst;
     };
@@ -356,8 +356,11 @@ export class Arborist {
         this.markedForDeletion.length = 0;
         // If any of the changes made will break the script the next line will fail and the
         // script will remain the same. If it doesn't break, the changes are valid and the script can be marked as modified.
+        const updatedSourceType = rootNode?.sourceType || originalSourceType;
         const script = generateCode(rootNode);
-        const ast = rebuildFlatAst(script, rootNode?.sourceType || originalSourceType, this.options);
+        rootNode = null;
+        this.ast = [];
+        const ast = rebuildFlatAst(script, updatedSourceType, this.options);
         if (ast && ast.length) {
           this.ast = ast;
           this.script = script;

@@ -32,6 +32,8 @@ const generateFlatASTDefaultOptions = {
   includeSrc: true,
   // If false, release parser tokens after comments have been attached
   retainTokens: true,
+  // If true, retain only documented scope relationships after identifier linking
+  compactScopes: false,
   // Retry to parse the code with sourceType: 'script' if 'module' failed with 'strict' error message
   alternateSourceTypeOnFailure: true,
   // Options for the espree parser
@@ -190,6 +192,63 @@ function linkIdentifierRelations(typeMap, scopes) {
 }
 
 /**
+ * Replace eslint-scope's internal graph with the documented subset used by flAST.
+ * @param {ASTAllScopes} scopes
+ * @return {ASTAllScopes}
+ */
+function compactScopeGraph(scopes) {
+  const projectedScopes = new WeakMap();
+  const projectedVariables = new WeakMap();
+  const projectVariable = variable => {
+    if (!variable) return variable;
+    let projected = projectedVariables.get(variable);
+    if (!projected) {
+      projected = {name: variable.name, identifiers: variable.identifiers || []};
+      projectedVariables.set(variable, projected);
+    }
+    return projected;
+  };
+
+  const rawScopes = [];
+  const pendingScopes = Object.values(scopes);
+  while (pendingScopes.length) {
+    const scope = pendingScopes.pop();
+    if (!scope || projectedScopes.has(scope)) continue;
+    rawScopes.push(scope);
+    projectedScopes.set(scope, {
+      block: scope.block,
+      childScopes: [],
+      scopeId: scope.scopeId,
+      type: scope.type,
+      upper: null,
+      variables: [],
+      references: [],
+    });
+    if (scope.upper) pendingScopes.push(scope.upper);
+    if (scope.variableScope) pendingScopes.push(scope.variableScope);
+    for (let i = 0; i < scope.childScopes.length; i++) pendingScopes.push(scope.childScopes[i]);
+  }
+
+  for (let i = 0; i < rawScopes.length; i++) {
+    const scope = rawScopes[i];
+    const projected = projectedScopes.get(scope);
+    projected.upper = projectedScopes.get(scope.upper) || null;
+    projected.variableScope = projectedScopes.get(scope.variableScope);
+    projected.childScopes = (scope.childScopes || []).map(child => projectedScopes.get(child));
+    projected.variables = (scope.variables || []).map(projectVariable);
+    projected.references = (scope.references || []).map(reference => ({
+      identifier: reference.identifier,
+      resolved: projectVariable(reference.resolved),
+    }));
+  }
+
+  const compactScopes = {};
+  for (const scopeId in scopes) compactScopes[scopeId] = projectedScopes.get(scopes[scopeId]);
+  scopes[0].block.allScopes = compactScopes;
+  return compactScopes;
+}
+
+/**
  * @param {ASTRootNode} rootNode
  * @param {GenerateFlatASTOptions} [opts]
  * @param {Record<string, number>} [phaseTimings] Internal benchmark timings.
@@ -200,7 +259,8 @@ function extractNodesFromRoot(rootNode, opts, phaseTimings) {
   const typeMap = {typeList: []};
   const allNodes = [];
   let startedAt = phaseTimings ? performance.now() : 0;
-  const scopes = opts.detailed ? getAllScopes(rootNode) : {};
+  let scopes = opts.detailed ? getAllScopes(rootNode) : {};
+  if (opts.detailed && opts.compactScopes) scopes = compactScopeGraph(scopes);
   if (phaseTimings) {
     phaseTimings.scopeAnalysis = performance.now() - startedAt;
     startedAt = performance.now();

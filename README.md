@@ -325,6 +325,7 @@ console.log(applyIteratively('const x = 1 + 2 + 3;', [foldSimpleMath]));
 - Re-parse or rely on `applyChanges()` / `applyIteratively()` whenever correctness matters.
 - Treat `detailed: false` as a performance mode for cases where you do not need scope or identifier metadata.
 - Use `retainTokens: false` when attached comments are needed but callers do not inspect `ast[0].tokens`; Arborist preserves this option across rebuilds.
+- Use `compactScopes: true` when callers only need flAST's documented scope relationships, not additional `eslint-scope` internals such as `set` or `through`.
 
 ## Structure Detection Use Cases
 flAST works especially well for identifying repeated code structures such as:
@@ -356,6 +357,7 @@ See the dedicated guide: [docs/structure-detection.md](docs/structure-detection.
 - `detailed: false` removes scope, ancestry, and identifier relationship metadata.
 - `includeSrc: false` skips storing `src` on nodes.
 - `retainTokens: false` releases parser tokens after comment attachment to reduce retained memory.
+- `compactScopes: true` releases undocumented `eslint-scope` internals after projecting the documented scope and identifier relationships.
 - The next breaking release is expected to make `retainTokens: false` the default; set `retainTokens: true` explicitly if your integration reads `ast[0].tokens`.
 - `Arborist.applyChanges()` validates by regenerating and reparsing code before committing the updated script.
 - Replacing the root node behaves differently from replacing a non-root node; it swaps the entire output program.

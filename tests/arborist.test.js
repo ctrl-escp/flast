@@ -142,6 +142,16 @@ describe('Arborist tests', () => {
     assert.equal(arborist.applyChanges(), 1, 'The restored AST could not accept a later valid change');
     assert.equal(arborist.script, 'console.log(\'ok\');');
   });
+  it('Restores the AST when a root replacement generates invalid source', () => {
+    const code = 'const value = 1;';
+    const arborist = new Arborist(code);
+    arborist.replaceNode(arborist.ast[0], {type: 'Identifier', name: 'not valid'});
+
+    assert.equal(arborist.applyChanges(), 0);
+    assert.equal(arborist.script, code);
+    assert.equal(arborist.ast[0].type, 'Program');
+    assert.equal(arborist.ast.find(node => node.type === 'Identifier').name, 'value');
+  });
   it('Verify comments aren\'t duplicated when replacing the root node', () => {
     const code = '//comment1\nconst a = 1, b = 2;';
     const expected = '//comment1\nconst a = 1;\nconst b = 2;';
@@ -422,14 +432,18 @@ describe('Arborist edge case tests', () => {
     assert.match(arb.script, /value = 2/);
   });
 
-  it('Preserves token retention options across rebuilds', () => {
-    const arb = new Arborist('// keep this comment\nconst value = 1;', {retainTokens: false});
+  it('Preserves flat AST generation options across rebuilds', () => {
+    const arb = new Arborist('// keep this comment\nconst value = 1;', {
+      compactScopes: true,
+      retainTokens: false,
+    });
     const literal = arb.ast.find(node => node.type === 'Literal');
     assert.equal(arb.ast[0].tokens, undefined);
     arb.replaceNode(literal, {type: 'Literal', value: 2, raw: '2'});
 
     assert.equal(arb.applyChanges(), 1);
     assert.equal(arb.ast[0].tokens, undefined);
+    assert.ok(Object.values(arb.ast[0].allScopes).every(scope => !('set' in scope) && !('through' in scope)));
     assert.match(arb.script, /keep this comment/);
   });
 });

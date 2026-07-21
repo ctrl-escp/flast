@@ -166,6 +166,41 @@ describe('Parsing tests', () => {
     assert.ok(timings.flatteningAndDecoration >= 0);
     assert.ok(timings.identifierLinking >= 0);
   });
+  it('Verify compact scopes preserve documented relationships', () => {
+    const code = 'const outer = 1; (function named(param) { let local = outer; return param + local; })();';
+    const expected = generateFlatAST(code);
+    const actual = generateFlatAST(code, {compactScopes: true});
+    const summarizeNodes = ast => ast.map(node => ({
+      type: node.type,
+      nodeId: node.nodeId,
+      scopeId: node.scope?.scopeId,
+      scopeType: node.scope?.type,
+      declarationId: node.declNode?.nodeId,
+      referenceIds: node.references?.map(reference => reference.nodeId),
+    }));
+    const summarizeScopes = ast => Object.values(ast[0].allScopes).map(scope => ({
+      scopeId: scope.scopeId,
+      type: scope.type,
+      blockId: scope.block.nodeId,
+      upperId: scope.upper?.scopeId,
+      upperType: scope.upper?.type,
+      childScopes: scope.childScopes.map(child => [child.scopeId, child.type]),
+      variableScopeId: scope.variableScope?.scopeId,
+      variables: scope.variables.map(variable => [
+        variable.name,
+        variable.identifiers.map(identifier => identifier.nodeId),
+      ]),
+      references: scope.references.map(reference => [
+        reference.identifier.nodeId,
+        reference.resolved?.identifiers?.map(identifier => identifier.nodeId),
+      ]),
+    }));
+
+    assert.deepEqual(summarizeNodes(actual), summarizeNodes(expected));
+    assert.deepEqual(summarizeScopes(actual), summarizeScopes(expected));
+    assert.ok(actual.every((node, index) => node.nodeId === index && actual[node.nodeId] === node));
+    assert.ok(Object.values(actual[0].allScopes).every(scope => !('set' in scope) && !('through' in scope)));
+  });
   it('Verify the module scope is ignored', () => {
     const code = 'function a() {return [1];}\nconst b = a();';
     const ast = generateFlatAST(code);
