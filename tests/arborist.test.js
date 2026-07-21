@@ -602,6 +602,23 @@ describe('Arborist edge case tests', () => {
     assert.deepEqual(summarizeDetailedNodes(arb.ast), summarizeDetailedNodes(oracle));
   });
 
+  it('Restores invalid compound assignment to a destructuring target', () => {
+    const code = 'let target, source = {target: 1}; ({target} = source);';
+    const options = {compactScopes: true, retainTokens: false};
+    const arb = new Arborist(code, options);
+    const assignment = arb.ast.find(node => node.type === 'AssignmentExpression');
+    arb.replaceNode(assignment, {
+      type: 'AssignmentExpression',
+      operator: '+=',
+      left: assignment.left,
+      right: assignment.right,
+    });
+
+    assert.equal(arb.applyChanges(), 0);
+    assert.equal(arb.script, code);
+    assert.equal(arb.ast.find(node => node.type === 'AssignmentExpression').operator, '=');
+  });
+
   it('Fully rebuilds when a BigInt literal becomes a unary expression', () => {
     const options = {compactScopes: true, retainTokens: false};
     const arb = new Arborist('const value = 1n;', options);

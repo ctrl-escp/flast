@@ -261,6 +261,13 @@ function hasReusableOperatorChildren(targetNode, replacementNode) {
   if (!childKeys || !reusableOperators[targetNode.type].has(replacementNode.operator)) return false;
   // Operator families are part of ESTree node identity: `&&` reparses as a
   // LogicalExpression even if a caller labels it as a BinaryExpression.
+  if (targetNode.type === 'AssignmentExpression' &&
+    (targetNode.left.type === 'ArrayPattern' || targetNode.left.type === 'ObjectPattern') &&
+    replacementNode.operator !== '=') {
+    // Destructuring targets are only valid with plain assignment. Rejecting
+    // compound operators here avoids parsing source that cannot be valid.
+    return false;
+  }
   // Requiring object identity prevents a replacement from smuggling changed
   // identifiers or bindings into an otherwise whitelisted expression type.
   for (let i = 0; i < childKeys.length; i++) {
@@ -424,7 +431,6 @@ function applyCompactMetadata(snapshot, ast) {
     if (snapshot.types[i] !== ast[i].type || snapshot.parentKeys[i] !== ast[i].parentKey ||
       snapshot.parentIds[i] !== (ast[i].parentNode?.nodeId ?? -1)) return false;
   }
-
   const variables = snapshot.variables.map(variable => ({
     identifiers: variable.identifiers.map(nodeId => ast[nodeId]),
     name: variable.name,
@@ -451,7 +457,6 @@ function applyCompactMetadata(snapshot, ast) {
       resolved: variables[variableIndex],
     }));
   }
-
   for (let i = 0; i < ast.length; i++) {
     ast[i].ancestry = [...snapshot.ancestries[i]];
     ast[i].lineage = [...snapshot.lineages[i]];
@@ -607,7 +612,7 @@ export class Arborist {
     // safely. Metadata reuse is therefore restricted to compact scopes.
     let canReuseDetailedMetadata = this.options.compactScopes === true && this.options.detailed !== false &&
       classifyMutationBatch(this.replacements, this.markedForDeletion) <= mutationImpact.expressionStructural;
-    const metadataSnapshot = canReuseDetailedMetadata ? captureCompactMetadata(this.ast) : null;
+    let metadataSnapshot = canReuseDetailedMetadata ? captureCompactMetadata(this.ast) : null;
     if (!metadataSnapshot) canReuseDetailedMetadata = false;
     // Without comments or retained tokens, producing lexer output only to
     // discard it adds parse time and transient memory without affecting AST output.
@@ -760,7 +765,11 @@ export class Arborist {
             basicOptions.parseOpts = {...this.options.parseOpts, comment: false, tokens: false};
           }
           ast = rebuildFlatAst(script, updatedSourceType, basicOptions);
-          if (!applyCompactMetadata(metadataSnapshot, ast)) {
+          const metadataWasApplied = ast.length && applyCompactMetadata(metadataSnapshot, ast);
+          // The snapshot is single-use. Drop its remaining typed arrays and
+          // compact records before any authoritative fallback allocation.
+          metadataSnapshot = null;
+          if (ast.length && !metadataWasApplied) {
             // Do not keep the rejected basic AST alive while allocating the
             // authoritative full rebuild.
             ast = [];

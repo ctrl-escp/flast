@@ -133,6 +133,8 @@ Operand identity is required so an operator replacement cannot introduce changed
 
 The replacement operator must also belong to the target node's ESTree operator family. For example, `&&` is not accepted for a queued `BinaryExpression`, because reparsing that source produces a `LogicalExpression`. Negative numbers, negative BigInts, `NaN`, and negative zero are likewise excluded because they cannot reparse as one `Literal` node.
 
+Compound assignment operators are not eligible when the left operand is an `ArrayPattern` or `ObjectPattern`; JavaScript only permits plain `=` assignment for destructuring targets. If a basic rebuild cannot parse generated source, Arborist skips the equivalent detailed parse and immediately restores the original AST.
+
 When metadata reuse is selected, `retainTokens: false` is configured, and no parser or attached comments exist anywhere in the current AST, Arborist also uses a lean basic parse without token/comment arrays. Comment-bearing ASTs and token-retaining configurations always use the rich parse path.
 
 ### Literal `value` and `raw`
