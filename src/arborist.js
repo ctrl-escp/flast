@@ -97,6 +97,13 @@ function indexOrderedAdjacentTargets(container, indexes) {
 
 /**
  * Build per-container lookup state for large or ordered-adjacent sibling deletions.
+ *
+ * @example
+ * // Deleting a contiguous run from one block creates one state entry so each
+ * // deletion uses its recorded index and the array is compacted only once.
+ * const states = buildBatchedDeletionStates(ast, statementNodeIds);
+ * states.get(block.body).indexes.get(block.body[0]); // 0
+ *
  * @param {ASTNode[]} ast Current flat AST.
  * @param {number[]} nodeIds IDs queued for deletion.
  * @return {Map<Array<ASTNode|null>, BatchedDeletionState>} Batched deletion state keyed by parent container.
@@ -153,6 +160,13 @@ function buildBatchedDeletionStates(ast, nodeIds) {
 
 /**
  * Remove deletion sentinels from an array while preserving sparse holes.
+ *
+ * @example
+ * const elements = [first, deletedArraySlot, , fourth];
+ * compactDeletedSlots(elements);
+ * elements.length; // 3
+ * 1 in elements; // false: the original sparse hole remains a hole.
+ *
  * @param {Array<ASTNode|symbol|null>} container Mutated child-node container.
  * @return {void}
  */
@@ -170,6 +184,16 @@ function compactDeletedSlots(container) {
 
 /**
  * Index targets in large or ordered-adjacent sibling-replacement batches.
+ *
+ * @example
+ * const indexesByContainer = buildBatchedReplacementIndexes(replacements);
+ * indexesByContainer.get(block.body).get(targetStatement); // target's array index
+ *
+ * @example
+ * // A small or scattered batch is omitted because individual indexOf()
+ * // lookups cost less than allocating and populating a batch index.
+ * buildBatchedReplacementIndexes(scatteredReplacements).has(block.body); // false
+ *
  * @param {Array<[ASTNode, ASTNode|object]>} replacements Queued replacements.
  * @return {Map<Array<ASTNode|null>, Map<ASTNode, number>>} Target indexes keyed by parent container.
  */
@@ -577,6 +601,11 @@ function captureCompactMetadata(ast) {
   const variables = [];
   /**
    * Get or create the snapshot index for a compact scope variable.
+   *
+   * @example
+   * getVariableIndex(variable) === getVariableIndex(variable); // true
+   * getVariableIndex(null); // -1
+   *
    * @param {object|null|undefined} variable Compact scope variable.
    * @return {number} Variable record index, or -1 for an unresolved reference.
    */
@@ -692,12 +721,28 @@ function applyCompactMetadata(snapshot, ast) {
 }
 
 /**
- * Arborist allows marking nodes for deletion or replacement, and then applying all changes in a single pass.
- * Note: Calling markNode(), replaceNode(), or deleteNode() only queues a change; the AST is not officially changed until applyChanges() is called.
+ * Queue AST deletions and replacements, then regenerate and validate them once.
+ *
+ * markNode(), replaceNode(), and deleteNode() do not update source or rebuild
+ * metadata. applyChanges() performs that work for the complete batch.
+ *
+ * @example
+ * const arborist = new Arborist('const answer = 41;');
+ * const literal = arborist.ast[0].typeMap.Literal[0];
+ * arborist.replaceNode(literal, {type: 'Literal', value: 42});
+ * arborist.script; // Still 'const answer = 41;'
+ * arborist.applyChanges();
+ * arborist.script; // 'const answer = 42;'
  */
 export class Arborist {
   /**
-   * @param {string|ASTNode[]} scriptOrFlatAstArr - The target script or a flat AST array.
+   * Create a mutation queue from source or an existing flat AST.
+   *
+   * @example
+   * const fromSource = new Arborist('let value = 1;', {compactScopes: true});
+   * const fromAst = new Arborist(fromSource.ast);
+   *
+   * @param {string|ASTNode[]} scriptOrFlatAstArr The target script or a flat AST array.
    * @param {GenerateFlatASTOptions} [options] Flat AST generation options used for construction and rebuilds.
 	 */
   constructor(scriptOrFlatAstArr, options = {}) {
@@ -717,9 +762,18 @@ export class Arborist {
   }
 
   /**
-	 * When applicable, replace the provided node with its nearest parent node that can be removed without breaking the code.
-	 * @param {ASTNode} startNode
-	 * @return {ASTNode}
+	 * Promote a deletion to the nearest parent that can be removed validly.
+   *
+   * For example, deleting the operand from `value++;` targets the complete
+   * ExpressionStatement; deleting a sole `if` branch queues an EmptyStatement
+   * because the consequent property cannot be absent.
+   *
+   * @example
+   * const identifier = arborist.ast[0].typeMap.Identifier[0];
+   * arborist._getCorrectTargetForDeletion(identifier).type; // 'ExpressionStatement'
+   *
+	 * @param {ASTNode} startNode Originally requested deletion target.
+	 * @return {ASTNode} Node that can be removed or replaced without invalid syntax.
 	 */
   _getCorrectTargetForDeletion(startNode) {
     let currentNode = startNode;
@@ -747,16 +801,31 @@ export class Arborist {
   }
 
   /**
-	 * @returns {number} The number of changes to be applied.
+   * Return the number of currently queued changes.
+   *
+   * @example
+   * arborist.replaceNode(first, replacement);
+   * arborist.deleteNode(second);
+   * arborist.getNumberOfChanges(); // 2
+   *
+	 * @returns {number} Queued replacement and deletion count.
 	 */
   getNumberOfChanges() {
     return this.replacements.length + this.markedForDeletion.length;
   }
 
   /**
-	 * Mark a node for replacement or deletion. This only sets a flag; the AST is not changed until applyChanges() is called.
+	 * Queue a replacement when replacementNode exists, otherwise queue a deletion.
+   *
+   * A node is ignored when it or one of its ancestors is already marked,
+   * preventing overlapping changes from being applied twice.
+   *
+   * @example
+   * arborist.markNode(identifier, {type: 'Identifier', name: 'renamed'});
+   * arborist.markNode(statement); // Queues deletion.
+   *
 	 * @param {ASTNode} targetNode The node to replace or remove.
-	 * @param {object|ASTNode} [replacementNode] If exists, replace the target node with this node.
+	 * @param {object|ASTNode} [replacementNode] Replacement node; omission means deletion.
 	 * @return {void}
 	 */
   markNode(targetNode, replacementNode) {
@@ -783,6 +852,10 @@ export class Arborist {
   /**
 	 * Queue a node replacement. This is equivalent to markNode(targetNode, replacementNode),
 	 * but is clearer at the call site when you are only replacing nodes.
+   *
+   * @example
+   * arborist.replaceNode(literal, {type: 'Literal', value: 42});
+   *
 	 * @param {ASTNode} targetNode The existing node to replace.
 	 * @param {object|ASTNode} replacementNode The node that should replace the target.
 	 * @return {void}
@@ -794,6 +867,10 @@ export class Arborist {
   /**
 	 * Queue a node deletion. This is equivalent to markNode(targetNode),
 	 * but is clearer at the call site when you are only deleting nodes.
+   *
+   * @example
+   * arborist.deleteNode(unusedStatement);
+   *
 	 * @param {ASTNode} targetNode The node to delete.
 	 * @return {void}
 	 */
@@ -803,9 +880,14 @@ export class Arborist {
 
   /**
 	 * Merge comments from a source node into a target node or array.
-	 * @param {ASTNode|Object} target - The node or array element to receive comments.
-	 * @param {ASTNode} source - The node whose comments should be merged.
-	 * @param {'leadingComments'|'trailingComments'} which
+   *
+   * @example
+   * Arborist.mergeComments(replacement, original, 'leadingComments');
+   * // Existing replacement comments stay first; original comments follow.
+   *
+	 * @param {ASTNode|Object} target The node or array element to receive comments.
+	 * @param {ASTNode} source The node whose comments should be merged.
+	 * @param {'leadingComments'|'trailingComments'} which Comment collection to merge.
 	 * @return {void}
 	 */
   static mergeComments(target, source, which) {
@@ -818,11 +900,20 @@ export class Arborist {
   }
 
   /**
-	 * Iterate over the complete AST and replace / remove marked nodes,
-	 * then rebuild code and AST to validate changes.
+	 * Apply the queued batch, generate source, and rebuild a validated flat AST.
 	 *
-	 * Note: If you delete a node that is the only child of its parent (e.g., the only statement in a block),
-	 * you may leave the parent in an invalid or empty state. Consider cleaning up empty parents if needed.
+   * Invalid generated source restores the original AST and returns zero.
+   * Successful application clears the queues and preserves the invariant
+   * `this.ast[node.nodeId] === node`.
+   *
+   * @example
+   * arborist.replaceNode(literal, {type: 'Literal', value: 42});
+   * arborist.applyChanges(); // 1
+   * arborist.getNumberOfChanges(); // 0
+   *
+   * @example
+   * arborist.replaceNode(expression, {type: 'DefinitelyInvalid'});
+   * arborist.applyChanges(); // 0; source and AST are restored.
 	 *
 	 * @return {number} The number of modifications made.
 	 */
@@ -980,12 +1071,13 @@ export class Arborist {
       if (changesCounter) {
         this.replacements.length = 0;
         this.markedForDeletion.length = 0;
-        // If any of the changes made will break the script the next line will fail and the
-        // script will remain the same. If it doesn't break, the changes are valid and the script can be marked as modified.
+        // Generation may reject structurally invalid replacements before any
+        // new AST is allocated; the catch path restores the original source.
         const updatedSourceType = rootNode?.sourceType || originalSourceType;
         const script = generateCode(rootNode);
         // Code generation is the last operation that needs the mutated graph.
-        // Release it before allocating the replacement AST to reduce overlap.
+        // Replace the array as well as the root reference so its backing store
+        // cannot remain allocated while the replacement AST is constructed.
         rootNode = null;
         this.ast = [];
         let ast;

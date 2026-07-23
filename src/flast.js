@@ -11,6 +11,14 @@ const sourceType = 'module';
 
 /**
  * Check whether source text may contain a comment syntax supported by Espree.
+ *
+ * This is deliberately a cheap conservative scan, not a tokenizer. A false
+ * positive costs a richer parse; a false negative could discard comments.
+ *
+ * @example
+ * mayContainComments('const url = "https://example.com";'); // true
+ * mayContainComments('const answer = 42;'); // false
+ *
  * @param {string} inputCode JavaScript source.
  * @return {boolean} Whether parsing may need comment and token arrays for attachment.
  */
@@ -23,9 +31,23 @@ function mayContainComments(inputCode) {
 }
 
 /**
- * @param {string} inputCode
- * @param {ParseCodeOptions} [opts] Additional options for espree
- * @return {ASTRootNode} The root of the AST
+ * Parse JavaScript into an ESTree root and attach comments when tokens exist.
+ *
+ * Unlike generateRootNode(), this low-level helper lets Espree parse errors
+ * escape and does not retry with another source type.
+ *
+ * @example
+ * const root = parseCode('/* header *\/ const value = 1;', {
+ *   sourceType: 'module',
+ *   comment: true,
+ *   tokens: true,
+ * });
+ * root.type; // 'Program'
+ * root.body[0].leadingComments[0].value; // ' header '
+ *
+ * @param {string} inputCode JavaScript source to parse.
+ * @param {ParseCodeOptions} [opts] Additional Espree options.
+ * @return {ASTRootNode} Parsed ESTree program.
  */
 function parseCode(inputCode, opts = {}) {
   const rootNode = parse(inputCode, {ecmaVersion, comment: true, range: true, ...opts});
@@ -39,17 +61,20 @@ const excludedParentKeys = new Set([
 ]);
 
 const generateFlatASTDefaultOptions = {
-  // If false, do not include any scope details
+  // Scope analysis dominates detailed parsing on large programs. Disable it
+  // when callers only need structural traversal.
   detailed: true,
-  // If false, do not include node src
+  // Source slices improve inspection but retain one string per AST node.
   includeSrc: true,
-  // If false, release parser tokens after comments have been attached
+  // Tokens are only needed temporarily for comment attachment unless callers
+  // explicitly inspect the root token stream.
   retainTokens: true,
-  // If true, retain only documented scope relationships after identifier linking
+  // Compact scopes discard eslint-scope internals while preserving flAST's
+  // documented declaration/reference relationships.
   compactScopes: false,
-  // Retry to parse the code with sourceType: 'script' if 'module' failed with 'strict' error message
+  // Script retry supports sloppy-mode input such as `with` statements.
   alternateSourceTypeOnFailure: true,
-  // Options for the espree parser
+  // These may be overridden for JSX, a fixed ECMA version, or script parsing.
   parseOpts: {
     sourceType,
     comment: true,
@@ -58,9 +83,29 @@ const generateFlatASTDefaultOptions = {
 };
 
 /**
- * @param {string} inputCode
- * @param {GenerateFlatASTOptions} [opts] Optional changes to behavior. See generateFlatASTDefaultOptions for available options.
- * @return {ASTNode[]} An array of flattened AST
+ * Parse source into a preorder flat AST.
+ *
+ * Every returned node obeys `ast[node.nodeId] === node`, so callers can store
+ * node relationships as compact numeric IDs and resolve them by array access.
+ * Invalid source returns an empty array.
+ *
+ * @example
+ * const ast = generateFlatAST('const answer = 42;');
+ * ast[0].type; // 'Program'
+ * ast.every((node, index) => node.nodeId === index); // true
+ * ast[0].typeMap.Literal[0].value; // 42
+ *
+ * @example
+ * const structuralAst = generateFlatAST('const answer = 42;', {
+ *   detailed: false,
+ *   includeSrc: false,
+ *   retainTokens: false,
+ * });
+ * structuralAst[0].allScopes; // undefined
+ *
+ * @param {string} inputCode JavaScript source to flatten.
+ * @param {GenerateFlatASTOptions} [opts] Parsing, metadata, and retention options.
+ * @return {ASTNode[]} Flat AST, or an empty array when parsing fails.
  */
 function generateFlatAST(inputCode, opts = {}) {
   opts = {...generateFlatASTDefaultOptions, ...opts};
@@ -86,19 +131,41 @@ const generateCodeDefaultOptions = {
 };
 
 /**
- * @param {ASTNode} rootNode
- * @param {GenerateCodeOptions} [opts] Optional changes to behavior. See generateCodeDefaultOptions for available options.
- *        								             All escodegen options are supported, including sourceMap, sourceMapWithCode, etc.
- * @return {string} Code generated from AST
+ * Generate JavaScript source from an ESTree node.
+ *
+ * All Escodegen options are accepted. flAST defaults to two-space indentation,
+ * automatic quote selection, readable output, and preserved comments.
+ *
+ * @example
+ * const root = generateRootNode('const answer = 42;');
+ * generateCode(root); // 'const answer = 42;'
+ *
+ * @example
+ * generateCode(root, {format: {compact: true}}); // 'const answer=42;'
+ *
+ * @param {ASTNode} rootNode ESTree node to generate.
+ * @param {GenerateCodeOptions} [opts] Escodegen formatting and source-map options.
+ * @return {string} Generated JavaScript source.
  */
 function generateCode(rootNode, opts = {}) {
   return generate(rootNode, {...generateCodeDefaultOptions, ...opts});
 }
 
 /**
- * @param {string} inputCode
- * @param {GenerateFlatASTOptions} [opts]
- * @return {ASTRootNode|null}
+ * Parse source with flAST's retention and source-type fallback behavior.
+ *
+ * Module parsing is attempted first by default. If it fails, script parsing is
+ * attempted so valid sloppy-mode programs remain usable. Both failures return
+ * null rather than throwing.
+ *
+ * @example
+ * generateRootNode('export const value = 1;').sourceType; // 'module'
+ * generateRootNode('with (target) { read(); }').sourceType; // 'script'
+ * generateRootNode('const = ;'); // null
+ *
+ * @param {string} inputCode JavaScript source to parse.
+ * @param {GenerateFlatASTOptions} [opts] Parsing and metadata-retention options.
+ * @return {ASTRootNode|null} Parsed root, or null when no configured parse succeeds.
  */
 function generateRootNode(inputCode, opts = {}) {
   opts = {...generateFlatASTDefaultOptions, ...opts};
@@ -131,12 +198,19 @@ function generateRootNode(inputCode, opts = {}) {
 }
 
 /**
- * @param {GenerateFlatASTOptions} opts
- * @param {ASTRootNode} rootNode
- * @param {ASTAllScopes} scopes
- * @param {number} nodeId
- * @param {ASTNode} node
- * @return {ASTNode}
+ * Decorate one node for flat traversal and assign its stable array index.
+ *
+ * @example
+ * const indexed = indexNode(options, rootNode, scopes, 12, node);
+ * indexed.nodeId; // 12
+ * indexed.childNodes.every(child => child.parentNode === indexed); // true
+ *
+ * @param {GenerateFlatASTOptions} opts Active flat-AST options.
+ * @param {ASTRootNode} rootNode Program root containing the original source.
+ * @param {ASTAllScopes} scopes Scopes indexed by flAST scope ID.
+ * @param {number} nodeId Node's destination index in the flat AST.
+ * @param {ASTNode} node Node to decorate.
+ * @return {ASTNode} Decorated node.
  */
 function indexNode(opts, rootNode, scopes, nodeId, node) {
   const children = [];
@@ -145,7 +219,8 @@ function indexNode(opts, rootNode, scopes, nodeId, node) {
   // Child nodes already receive parentKey while their parent is indexed.
   // Only the root or a standalone custom node needs the default property.
   if (node.parentKey === undefined) node.parentKey = '';
-  // Iterate over all keys of the node to find child nodes
+  // Known ESTree nodes use VisitorKeys to avoid scanning metadata. Reflective
+  // discovery keeps custom parser node types traversable.
   const visitorKeys = VisitorKeys[node.type];
   const keys = visitorKeys || Object.keys(node);
   for (let i = 0; i < keys.length; i++) {
@@ -153,8 +228,8 @@ function indexNode(opts, rootNode, scopes, nodeId, node) {
     if (!visitorKeys && excludedParentKeys.has(key)) continue;
     const content = node[key];
     if (content && typeof content === 'object') {
-      // Sort each child node by its start position
-      // and set the parentNode and parentKey attributes
+      // Parent links are assigned before traversal so descendants can inherit
+      // ancestry, lineage, and scope data when they are indexed.
       if (Array.isArray(content)) {
         for (let j = 0; j < content.length; j++) {
           const childNode = content[j];
@@ -199,8 +274,15 @@ function indexNode(opts, rootNode, scopes, nodeId, node) {
 }
 
 /**
- * @param {ASTTypeMap} typeMap
- * @param {ASTAllScopes} scopes
+ * Link identifier declarations and references after every node is indexed.
+ *
+ * @example
+ * linkIdentifierRelations(root.typeMap, root.allScopes);
+ * declaration.references[0] === reference; // true
+ * reference.declNode === declaration; // true
+ *
+ * @param {ASTTypeMap} typeMap Nodes grouped by ESTree type.
+ * @param {ASTAllScopes} scopes Scopes indexed by flAST scope ID.
  * @return {void}
  */
 function linkIdentifierRelations(typeMap, scopes) {
@@ -214,8 +296,14 @@ function linkIdentifierRelations(typeMap, scopes) {
 
 /**
  * Replace eslint-scope's internal graph with the documented subset used by flAST.
- * @param {ASTAllScopes} scopes
- * @return {ASTAllScopes}
+ *
+ * @example
+ * const compact = compactScopeGraph(rawScopes);
+ * compact[0].variables[0]; // {name, identifiers}
+ * compact[0].through; // undefined: undocumented eslint-scope internals are removed.
+ *
+ * @param {ASTAllScopes} scopes Raw scopes indexed by flAST scope ID.
+ * @return {ASTAllScopes} Compact scopes preserving public links and object identity.
  */
 function compactScopeGraph(scopes) {
   // The raw scope graph remains strongly reachable throughout projection, so
@@ -225,6 +313,13 @@ function compactScopeGraph(scopes) {
   const projectedVariables = new Map();
   /**
    * Project an eslint-scope variable into flAST's documented representation.
+   *
+   * Repeated projection returns the same object because scope references and
+   * variable lists must agree by identity.
+   *
+   * @example
+   * projectVariable(variable) === projectVariable(variable); // true
+   *
    * @param {object|null|undefined} variable eslint-scope variable.
    * @return {object|null|undefined} Compact variable projection.
    */
@@ -282,10 +377,21 @@ function compactScopeGraph(scopes) {
 }
 
 /**
- * @param {ASTRootNode} rootNode
- * @param {GenerateFlatASTOptions} [opts]
+ * Flatten and decorate an already parsed ESTree program.
+ *
+ * Traversal is iterative so deeply nested or very large programs cannot
+ * overflow the JavaScript call stack.
+ *
+ * @example
+ * const root = parseCode('function run() { return 1; }', {sourceType: 'module'});
+ * const ast = extractNodesFromRoot(root);
+ * ast[0] === root; // true
+ * ast.every((node, index) => node.nodeId === index); // true
+ *
+ * @param {ASTRootNode} rootNode Parsed ESTree program.
+ * @param {GenerateFlatASTOptions} [opts] Metadata and source-retention options.
  * @param {Record<string, number>} [phaseTimings] Internal benchmark timings.
- * @return {ASTNode[]}
+ * @return {ASTNode[]} Decorated nodes in preorder traversal order.
  */
 function extractNodesFromRoot(rootNode, opts, phaseTimings) {
   opts = {...generateFlatASTDefaultOptions, ...opts};
@@ -350,6 +456,17 @@ function extractNodesFromRoot(rootNode, opts, phaseTimings) {
   }
   if (allNodes?.length) {
     allNodes[0].typeMap = new Proxy(typeMap, {
+      /**
+       * Return an empty list for node types absent from this program.
+       *
+       * @example
+       * root.typeMap.Identifier; // [] when the program has no identifiers.
+       *
+       * @param {ASTTypeMap} target Underlying type map.
+       * @param {string|symbol} prop Requested property.
+       * @param {object} receiver Proxy receiver.
+       * @return {ASTNode[]|string[]} Stored value or a fresh empty array.
+       */
       get(target, prop, receiver) {
         if (prop in target) {
           return Reflect.get(target, prop, receiver);
@@ -363,9 +480,14 @@ function extractNodesFromRoot(rootNode, opts, phaseTimings) {
 
 /**
  * Precompute a map of variable names to declarations for each scope for fast lookup.
- * @param {ASTAllScopes} scopes
- * @param {Map<object, ASTNode[]>} [referenceDeclMap]
- * @return {ScopeVariableMapByScopeId} Map of scopeId to { [name]: variable }
+ *
+ * @example
+ * const maps = buildScopeVarMaps(root.allScopes);
+ * maps[functionScopeId].parameter.identifiers[0].name; // 'parameter'
+ *
+ * @param {ASTAllScopes} scopes Scopes indexed by flAST scope ID.
+ * @param {Map<object, ASTNode[]>} [referenceDeclMap] Optional direct reference-to-declaration cache.
+ * @return {ScopeVariableMapByScopeId} Variable-name map for each scope ID.
  */
 function buildScopeVarMaps(scopes, referenceDeclMap) {
   const scopeVarMaps = {};
@@ -388,9 +510,15 @@ function buildScopeVarMaps(scopes, referenceDeclMap) {
 }
 
 /**
- * @param {object[]} references
- * @param {string} name
- * @return {ASTNode[]|undefined}
+ * Find declaration nodes resolved for a named scope reference.
+ *
+ * @example
+ * findDeclarationNodes(scope.references, 'answer'); // [identifierNode]
+ * findDeclarationNodes(scope.references, 'missing'); // undefined
+ *
+ * @param {object[]} references Scope reference records.
+ * @param {string} name Identifier name to resolve.
+ * @return {ASTNode[]|undefined} Resolved declaration identifiers, if recorded.
  */
 function findDeclarationNodes(references, name) {
   for (let i = 0; i < references.length; i++) {
@@ -400,14 +528,28 @@ function findDeclarationNodes(references, name) {
 }
 
 /**
- * @param {ASTNode} node
- * @param {ScopeVariableMapByScopeId} scopeVarMaps
- * @param {Map<object, ASTNode[]>} [referenceDeclMap]
+ * Attach bidirectional declaration/reference links to one Identifier.
+ *
+ * Non-computed member properties and object keys are intentionally ignored:
+ * in `object.property`, `property` is a name, not a variable reference.
+ *
+ * @example
+ * mapIdentifierRelations(reference, scopeVarMaps);
+ * reference.declNode === declaration; // true
+ * declaration.references.includes(reference); // true
+ *
+ * @example
+ * // No link is created for `property` here.
+ * const value = object.property;
+ *
+ * @param {ASTNode} node Candidate identifier node.
+ * @param {ScopeVariableMapByScopeId} scopeVarMaps Variables indexed by scope and name.
+ * @param {Map<object, ASTNode[]>} [referenceDeclMap] Optional direct resolution cache.
  * @return {void}
  */
 function mapIdentifierRelations(node, scopeVarMaps, referenceDeclMap) {
-  // Track references and declarations
-  // Prevent assigning declNode to member expression properties or object keys
+  // Computed properties such as object[property] remain real references;
+  // only syntactic names in object.property and `{property: value}` are skipped.
   if (node.type === 'Identifier' && !(!node.parentNode.computed && ['property', 'key'].includes(node.parentKey))) {
     const scope = node.scope;
     const varMap = scope && scopeVarMaps ? scopeVarMaps[scope.scopeId] : undefined;
@@ -451,9 +593,15 @@ function mapIdentifierRelations(node, scopeVarMaps, referenceDeclMap) {
 }
 
 /**
- * @param {number[]} targetArr
- * @param {number[]} containedArr
- * @return {number} Return the maximum length of shared numbers
+ * Count the common prefix shared by two scope-lineage arrays.
+ *
+ * @example
+ * maxSharedLength([0, 2, 5], [0, 2, 8]); // 2
+ * maxSharedLength([0], [1]); // 0
+ *
+ * @param {number[]} targetArr First lineage.
+ * @param {number[]} containedArr Second lineage.
+ * @return {number} Number of equal entries before the first difference.
  */
 function maxSharedLength(targetArr, containedArr) {
   let count = 0;
@@ -465,8 +613,19 @@ function maxSharedLength(targetArr, containedArr) {
 }
 
 /**
- * @param {ASTRootNode} rootNode
- * @return {ASTAllScopes}
+ * Analyze and normalize every scope reachable from a program.
+ *
+ * Module and function-name wrapper scopes are folded out of the public
+ * scope-ID map, while their variables and reachable relationships are retained.
+ *
+ * @example
+ * const root = parseCode('export const value = 1;', {sourceType: 'module'});
+ * const scopes = getAllScopes(root);
+ * scopes[0].block === root; // true
+ * root.allScopes === scopes; // true
+ *
+ * @param {ASTRootNode} rootNode Parsed ESTree program.
+ * @return {ASTAllScopes} Normalized scopes indexed by consecutive scope IDs.
  */
 function getAllScopes(rootNode) {
   // noinspection JSCheckFunctionSignatures

@@ -2,13 +2,39 @@ import {Arborist} from '../arborist.js';
 import {logger} from './logger.js';
 import {createHash} from 'node:crypto';
 
+/**
+ * Create a stable digest used to recognize an unchanged Arborist root.
+ *
+ * @example
+ * generateHash('const value = 1;') === generateHash('const value = 1;'); // true
+ *
+ * @param {string} str Source text to hash.
+ * @return {string} Lowercase SHA-256 digest.
+ */
 const generateHash = str => createHash('sha256').update(str).digest('hex');
 
 /**
- * Apply functions to modify the script repeatedly until they are no long effective or the max number of iterations is reached.
+ * Apply modifiers repeatedly until one complete pass leaves the source unchanged.
+ *
+ * Each modifier receives the latest Arborist and must return an Arborist. It
+ * may queue changes on the existing instance or return a replacement instance.
+ * Queued changes are applied before the next modifier runs.
+ *
+ * @example
+ * const replaceOne = arborist => {
+ *   const literal = arborist.ast[0].typeMap.Literal.find(node => node.value === 1);
+ *   if (literal) arborist.replaceNode(literal, {type: 'Literal', value: 2});
+ *   return arborist;
+ * };
+ * applyIteratively('const value = 1;', [replaceOne]); // 'const value = 2;'
+ *
+ * @example
+ * // Self-reproducing transformations are bounded explicitly.
+ * applyIteratively(source, [modifier], 10);
+ *
  * @param {string} script The target script to run the functions on.
- * @param {function[]} funcs
- * @param {number?} maxIterations (optional) Stop the loop after this many iterations at most.
+ * @param {Array<(arborist: Arborist) => Arborist>} funcs Ordered modifier functions.
+ * @param {number} [maxIterations=500] Maximum number of complete passes.
  * @return {string} The possibly modified script.
  */
 function applyIteratively(script, funcs, maxIterations = 500) {
@@ -23,7 +49,8 @@ function applyIteratively(script, funcs, maxIterations = 500) {
       const iterationStartTime = Date.now();
       scriptSnapshot = script;
 
-      // Mark the root node with the script hash to distinguish cache of different scripts.
+      // The marker distinguishes mutation of this Arborist from a modifier
+      // returning a newly constructed Arborist for different source.
       arborist.ast[0].scriptHash = scriptHash;
       for (let i = 0; i <  funcs.length; i++) {
         const func = funcs[i];
@@ -32,7 +59,8 @@ function applyIteratively(script, funcs, maxIterations = 500) {
           logger.debug(`\t[!] Running ${func.name}...`);
           arborist = func(arborist);
           if (!arborist.ast?.length) break;
-          // If the hash doesn't exist it means the Arborist was replaced
+          // A new Arborist lacks the marker, so treat the replacement itself
+          // as a change even if it has no queued node mutations.
           const numberOfNewChanges = arborist.getNumberOfChanges() + +!arborist.ast[0].scriptHash;
           if (numberOfNewChanges) {
             changesCounter += numberOfNewChanges;
