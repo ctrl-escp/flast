@@ -119,6 +119,7 @@ With `compactScopes: true`, a replacement batch is eligible for a metadata-reuse
 2. The batch contains at least one replacement and no deletions.
 3. Every replacement is one of these explicitly supported forms:
    - A `Literal` that remains in the same category: string, number, boolean, null, BigInt, or regular expression.
+   - A `TemplateElement` that keeps the same `tail` role and changes `value.raw` to plain delimiter-free text.
    - A `BinaryExpression` operator change with the exact same `left` and `right` node objects.
    - A `LogicalExpression` operator change with the exact same `left` and `right` node objects.
    - An `AssignmentExpression` operator change with the exact same `left` and `right` node objects.
@@ -134,6 +135,8 @@ Operand identity is required so an operator replacement cannot introduce changed
 The replacement operator must also belong to the target node's ESTree operator family. For example, `&&` is not accepted for a queued `BinaryExpression`, because reparsing that source produces a `LogicalExpression`. Negative numbers, negative BigInts, `NaN`, and negative zero are likewise excluded because they cannot reparse as one `Literal` node.
 
 Compound assignment operators are not eligible when the left operand is an `ArrayPattern` or `ObjectPattern`; JavaScript only permits plain `=` assignment for destructuring targets. If a basic rebuild cannot parse generated source, Arborist skips the equivalent detailed parse and immediately restores the original AST.
+
+For metadata reuse, replacement template text cannot contain a backslash, backtick, or `${`. Those characters can escape or introduce template delimiters and therefore require a full rebuild. This restriction affects optimization eligibility only; such replacements remain supported through the normal validated rebuild path.
 
 When metadata reuse is selected, `retainTokens: false` is configured, and no parser or attached comments exist anywhere in the current AST, Arborist also uses a lean basic parse without token/comment arrays. Comment-bearing ASTs and token-retaining configurations always use the rich parse path.
 

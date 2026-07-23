@@ -631,6 +631,40 @@ describe('Arborist edge case tests', () => {
     assert.deepEqual(summarizeDetailedNodes(arb.ast), summarizeDetailedNodes(oracle));
   });
 
+  it('Reuses compact metadata for delimiter-free template text', () => {
+    const options = {compactScopes: true, retainTokens: false};
+    const arb = new Arborist('const name = "Ada"; const message = `Hello ${name}!`;', options);
+    const target = arb.ast.find(node => node.type === 'TemplateElement' && !node.tail);
+    arb.replaceNode(target, {
+      type: 'TemplateElement',
+      tail: target.tail,
+      value: {raw: 'Welcome ', cooked: 'Welcome '},
+    });
+
+    assert.equal(arb.applyChanges(), 1);
+    assert.match(arb.script, /`Welcome \$\{ name \}!`/);
+    const oracle = generateFlatAST(arb.script, options);
+    assert.deepEqual(summarizeDetailedNodes(arb.ast), summarizeDetailedNodes(oracle));
+    assert.deepEqual(summarizeDetailedScopes(arb.ast), summarizeDetailedScopes(oracle));
+  });
+
+  it('Fully rebuilds template text that introduces an interpolation', () => {
+    const options = {compactScopes: true, retainTokens: false};
+    const arb = new Arborist('const first = 1, second = 2; `${first}`;', options);
+    const target = arb.ast.find(node => node.type === 'TemplateElement' && !node.tail);
+    arb.replaceNode(target, {
+      type: 'TemplateElement',
+      tail: target.tail,
+      value: {raw: '${second}', cooked: '${second}'},
+    });
+
+    assert.equal(arb.applyChanges(), 1);
+    const oracle = generateFlatAST(arb.script, options);
+    assert.equal(arb.ast[0].typeMap.TemplateElement.length, 3);
+    assert.deepEqual(summarizeDetailedNodes(arb.ast), summarizeDetailedNodes(oracle));
+    assert.deepEqual(summarizeDetailedScopes(arb.ast), summarizeDetailedScopes(oracle));
+  });
+
   it('Preserves comments when metadata reuse requires rich parsing', () => {
     const code = '// file header\nconst value = 1; // retained';
     const options = {compactScopes: true, retainTokens: false};

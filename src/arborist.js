@@ -250,6 +250,21 @@ function hasReusableLiteralShape(node, category) {
 }
 
 /**
+ * Check whether TemplateElement text cannot change its surrounding AST shape.
+ * @param {ASTNode} targetNode Existing template element.
+ * @param {ASTNode|object} replacementNode Replacement template element.
+ * @return {boolean} Whether reparsing preserves one element in the same quasi position.
+ */
+function hasReusableTemplateElementShape(targetNode, replacementNode) {
+  const raw = replacementNode.value?.raw;
+  if (replacementNode.type !== 'TemplateElement' || replacementNode.tail !== targetNode.tail ||
+    typeof raw !== 'string') return false;
+  // Backslashes make delimiter escaping context-dependent. A raw backtick can
+  // terminate the template, while `${` introduces an entirely new subtree.
+  return !raw.includes('\\') && !raw.includes('`') && !raw.includes('${');
+}
+
+/**
  * Verify that an operator replacement retains the exact operand subtrees.
  * @param {ASTNode} targetNode Existing expression node.
  * @param {ASTNode|object} replacementNode Replacement expression node.
@@ -297,6 +312,10 @@ function classifyReplacement(targetNode, replacementNode) {
     const replacementCategory = literalCategory(replacementNode);
     return literalCategory(targetNode) === replacementCategory &&
       hasReusableLiteralShape(replacementNode, replacementCategory) ?
+      mutationImpact.valueOnly : mutationImpact.unknown;
+  }
+  if (targetNode.type === 'TemplateElement') {
+    return hasReusableTemplateElementShape(targetNode, replacementNode) ?
       mutationImpact.valueOnly : mutationImpact.unknown;
   }
   if (hasReusableOperatorChildren(targetNode, replacementNode)) {
