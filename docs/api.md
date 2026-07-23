@@ -6,7 +6,7 @@ This guide focuses on flAST's current public API surface and the behaviors that 
 - [Exports](#exports)
 - [`generateFlatAST(inputCode, opts?)`](#generateflatastinputcode-opts)
 - [`Arborist`](#arborist)
-- [`applyIteratively(script, funcs, maxIterations?)`](#applyiterativelyscript-funcs-maxiterations)
+- [`applyIteratively(script, funcs, options?)`](#applyiterativelyscript-funcs-options)
 - [`logger`](#logger)
 - [`generateCode(rootNode, opts?)`](#generatecoderootnode-opts)
 - [`generateRootNode(inputCode, opts?)`](#generaterootnodeinputcode-opts)
@@ -162,9 +162,9 @@ For ordinary string, boolean, null, decimal, hexadecimal, and similar literals, 
 
 Do not rely on that behavior for every literal form. BigInt generation uses `bigint`/`raw`, regular-expression generation uses `regex`, and numeric-separator literals can preserve an underscore-containing `raw` string. When changing those literals, update all corresponding fields or remove stale formatting fields where supported.
 
-### Hash behavior
+### Iterative convergence
 
-Every successful Arborist replacement updates `arb.script`, regardless of rebuild mode. `applyIteratively()` hashes that generated script after every successful `applyChanges()` call, so metadata reuse does not bypass hash updates. The hash remains unchanged only when the generated source string itself remains unchanged—for example, when stale literal metadata causes the old spelling to be emitted.
+Every successful Arborist replacement updates `arb.script`, regardless of rebuild mode. `applyIteratively()` compares the generated source before and after each complete pass, so rejected edits and replacements that emit the same source converge immediately. Arborist object identity detects a modifier that returns a different mutation session; no root marker or Node.js crypto dependency is used.
 
 ### Important Properties
 - `script`: current generated script
@@ -202,12 +202,34 @@ Every successful Arborist replacement updates `arb.script`, regardless of rebuil
 - Reverts if the generated code is invalid
 - Returns number of applied changes
 
+#### `finalizeScopes()`
+- Requires an empty mutation queue
+- Rebuilds a compact-scope Arborist once with full `eslint-scope` metadata
+- Returns the same Arborist instance
+- Is a no-op that preserves AST identity when full scopes already exist
+- Swaps the AST and options only after a successful rebuild
+- Keeps later `applyChanges()` calls in full-scope mode
+
+```js
+const arb = new Arborist(source, {
+  compactScopes: true,
+  retainTokens: false,
+});
+
+// Perform any number of compact editing passes.
+arb.applyChanges();
+
+// Materialize raw eslint-scope fields only when a consumer needs them.
+arb.finalizeScopes();
+console.log(arb.ast[0].allScopes[0].set);
+```
+
 ### Gotchas
 - Deleting a node may target a higher removable parent for validity
 - Deleting or replacing the root behaves differently from leaf edits
 - Comments are merged and preserved where possible, but complex transforms should still be tested
 
-## `applyIteratively(script, funcs, maxIterations?)`
+## `applyIteratively(script, funcs, options?)`
 Runs one or more Arborist-based transforms repeatedly until no changes are made or the iteration limit is reached.
 
 ### Typical Use
@@ -221,8 +243,30 @@ function transform(arb) {
   return arb;
 }
 
-const result = applyIteratively(script, [transform], 3);
+const result = applyIteratively(script, [transform], {
+  maxIterations: 3,
+  mode: 'batch',
+  arboristOptions: {
+    compactScopes: true,
+    retainTokens: false,
+  },
+});
 ```
+
+The numeric third argument remains supported as shorthand for
+`{maxIterations: number}`.
+
+### Modes
+
+- `mode: 'sequential'` is the current default. It rebuilds after each modifier, so a later modifier sees the earlier modifier's regenerated AST.
+- `mode: 'batch'` runs every modifier against one working AST and rebuilds once at the end of the pass. Use it for independent modifiers that can queue their edits together.
+- Batch mode throws if a modifier returns a different Arborist while the current one has pending edits. Use sequential mode for that pipeline so edits are never discarded.
+- Ordinary modifier exceptions are logged when enabled and do not prevent later modifiers from running.
+
+The next major release is planned to make `batch` the default and to construct
+the internal iterative Arborist with `compactScopes: true` and
+`retainTokens: false` by default. Pass `mode` and `arboristOptions` explicitly
+when behavior must remain stable across that release.
 
 ### Notes
 - Useful when one transform unlocks another in a later pass

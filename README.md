@@ -308,6 +308,20 @@ function foldSimpleMath(arb) {
 console.log(applyIteratively('const x = 1 + 2 + 3;', [foldSimpleMath]));
 ```
 
+Independent transforms can share one rebuild per pass:
+
+```js
+const result = applyIteratively(source, [replaceStrings, simplifyMath], {
+  mode: 'batch',
+  arboristOptions: {compactScopes: true, retainTokens: false},
+});
+```
+
+Use `mode: 'sequential'` when a later transform must inspect the AST rebuilt by
+an earlier transform. Sequential remains the default in this major version;
+the next major is planned to default iterative work to batched compact scopes
+without retained tokens.
+
 ## Which API Should I Use?
 - Use `parseCode` if you want the parser root as produced by Espree.
 - Use `generateRootNode` if you want a root node and are okay with `null` for invalid input.
@@ -326,6 +340,7 @@ console.log(applyIteratively('const x = 1 + 2 + 3;', [foldSimpleMath]));
 - Treat `detailed: false` as a performance mode for cases where you do not need scope or identifier metadata.
 - Use `retainTokens: false` when attached comments are needed but callers do not inspect `ast[0].tokens`; sources without possible comment markers then avoid allocating lexer arrays entirely, and Arborist preserves this option across rebuilds.
 - Use `compactScopes: true` when callers only need flAST's documented scope relationships, not additional `eslint-scope` internals such as `set` or `through`.
+- Call `arb.finalizeScopes()` after compact editing only when a consumer needs raw `eslint-scope` internals. It performs one full rebuild and keeps later edits in full-scope mode.
 - Arborist can reuse compact scope metadata for verified literal and operator-only replacements. It always regenerates source and reparses the structural AST; unsupported mutations fall back to full scope analysis.
 
 ## Structure Detection Use Cases

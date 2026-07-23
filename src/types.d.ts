@@ -28,6 +28,28 @@ export interface GenerateFlatASTOptions {
   parseOpts?: ParseCodeOptions;
 }
 
+/** Rebuild strategy used by {@link applyIteratively}. */
+export type ApplyIterativelyMode = 'batch' | 'sequential';
+
+/**
+ * Controls iterative mutation passes.
+ *
+ * @example
+ * applyIteratively(source, modifiers, {
+ *   mode: 'batch',
+ *   maxIterations: 20,
+ *   arboristOptions: {compactScopes: true, retainTokens: false},
+ * });
+ */
+export interface ApplyIterativelyOptions {
+  /** Maximum complete modifier passes. @default 500 */
+  maxIterations?: number;
+  /** Rebuild once per modifier or once per complete pass. @default 'sequential' */
+  mode?: ApplyIterativelyMode;
+  /** Options used to construct the initial Arborist. */
+  arboristOptions?: GenerateFlatASTOptions;
+}
+
 /** Escodegen options accepted by {@link generateCode}. */
 export interface GenerateCodeOptions {
   format?: {
@@ -204,7 +226,6 @@ export interface ASTNode {
   /** Innermost normalized scope containing this node. */
   scope?: ASTScope;
   scopeId?: number;
-  scriptHash?: string;
   shorthand?: boolean;
   source?: ASTNode | null;
   sourceType?: string;
@@ -277,6 +298,8 @@ export class Arborist {
   static mergeComments(target: ASTNode | object, source: ASTNode, which: 'leadingComments' | 'trailingComments'): void;
   /** Apply queued changes, rebuild the AST, and return the successful change count. */
   applyChanges(): number;
+  /** Replace compact scope metadata with one authoritative full-scope rebuild. */
+  finalizeScopes(): this;
 }
 
 /**
@@ -320,6 +343,8 @@ export function mapIdentifierRelations(node: ASTNode, scopeVarMaps: ScopeVariabl
  * applyIteratively(source, [removeDeadCode, simplifyExpressions], 20);
  */
 export function applyIteratively(script: string, funcs: Array<(arb: Arborist) => Arborist>, maxIterations?: number): string;
+export function applyIteratively(script: string, funcs: Array<(arb: Arborist) => Arborist>,
+  options?: ApplyIterativelyOptions): string;
 
 /**
  * Shared opt-in logger. Output is disabled until a level is selected.

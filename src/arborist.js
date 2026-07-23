@@ -18,7 +18,7 @@ import {generateCode, generateFlatAST} from './flast.js';
  * @property {boolean} declarationsArePacked Whether declarations contains reference/declaration pairs.
  * @property {Int32Array} parentIds Per-node parent IDs, or -1.
  * @property {string[]} parentKeys Per-node structural keys.
- * @property {Int32Array} scopeIndexes Per-node indexes into the scope records.
+ * @property {Uint16Array|Uint32Array} scopeIndexes Per-node indexes into the scope records.
  * @property {string[]} types Per-node ESTree types.
  * @property {boolean} hasComments Whether any parser or attached comments must be preserved.
  * @property {object[]} scopes Compact scope records.
@@ -35,6 +35,23 @@ const scriptParseOptions = {
   alternateSourceTypeOnFailure: false,
   parseOpts: {sourceType: 'script', comment: true, tokens: true},
 };
+
+/**
+ * Allocate the narrowest scope-index array allowed by the snapshot format.
+ *
+ * @example
+ * createScopeIndexArray(100, 12) instanceof Uint16Array; // true
+ * createScopeIndexArray(100, 70000) instanceof Uint32Array; // true
+ *
+ * @param {number} length Number of indexes to store.
+ * @param {number} cardinality Number of scope records.
+ * @return {Uint16Array|Uint32Array|null} Narrow index array, or null above uint32 capacity.
+ */
+function createScopeIndexArray(length, cardinality) {
+  if (cardinality <= 0x10000) return new Uint16Array(length);
+  if (cardinality <= 0x100000000) return new Uint32Array(length);
+  return null;
+}
 
 /**
  * Rebuild a flat AST while preserving an already-known script source type.
@@ -567,23 +584,18 @@ function classifyMutationBatch(replacements, deletions) {
 function captureCompactMetadata(ast) {
   if (!ast[0]?.allScopes) return null;
   const nodeCount = ast.length;
-  const identifiers = ast[0].typeMap?.Identifier;
+  const typeMap = ast[0].typeMap;
+  const identifiers = typeMap?.Identifier;
   if (!Array.isArray(identifiers)) return null;
   let declarationCount = 0;
   for (let i = 0; i < identifiers.length; i++) {
-    if (identifiers[i].declNode) declarationCount++;
+    const identifier = identifiers[i];
+    // Declaration packing is the only snapshot decision that trusts typeMap.
+    // Validate those entries now; the final offset check detects omissions.
+    if (identifier?.type !== 'Identifier' || ast[identifier.nodeId] !== identifier) return null;
+    if (identifier.declNode) declarationCount++;
   }
   const declarationsArePacked = declarationCount * 2 < nodeCount;
-  const snapshot = {
-    declarations: new Int32Array(declarationsArePacked ? declarationCount * 2 : nodeCount),
-    declarationsArePacked,
-    parentIds: new Int32Array(nodeCount).fill(-1),
-    parentKeys: new Array(nodeCount),
-    scopeIndexes: new Int32Array(nodeCount).fill(-1),
-    types: new Array(nodeCount),
-    hasComments: Boolean(ast[0].comments?.length),
-  };
-  if (!declarationsArePacked) snapshot.declarations.fill(-1);
   const scopeIndexes = new Map();
   const scopes = [];
   const pendingScopes = Object.values(ast[0].allScopes);
@@ -598,6 +610,19 @@ function captureCompactMetadata(ast) {
     if (scope.variableScope) pendingScopes.push(scope.variableScope);
     for (let i = 0; i < scope.childScopes.length; i++) pendingScopes.push(scope.childScopes[i]);
   }
+
+  const nodeScopeIndexes = createScopeIndexArray(nodeCount, scopes.length);
+  if (!nodeScopeIndexes) return null;
+  const snapshot = {
+    declarations: new Int32Array(declarationsArePacked ? declarationCount * 2 : nodeCount),
+    declarationsArePacked,
+    parentIds: new Int32Array(nodeCount).fill(-1),
+    parentKeys: new Array(nodeCount),
+    scopeIndexes: nodeScopeIndexes,
+    types: new Array(nodeCount),
+    hasComments: Boolean(ast[0].comments?.length),
+  };
+  if (!declarationsArePacked) snapshot.declarations.fill(-1);
 
   const variableIndexes = new Map();
   const variables = [];
@@ -649,9 +674,11 @@ function captureCompactMetadata(ast) {
     // Every node scope must resolve into the captured graph. Otherwise the
     // rebuilt lineage could silently point at incomplete scope metadata.
     if (scopeIndex === undefined) return null;
+    const parentKey = node.parentKey;
+    if (typeof parentKey !== 'string') return null;
     snapshot.parentIds[i] = node.parentNode?.nodeId ?? -1;
-    snapshot.parentKeys[i] = node.parentKey;
     snapshot.scopeIndexes[i] = scopeIndex;
+    snapshot.parentKeys[i] = parentKey;
     snapshot.types[i] = node.type;
     if (node.leadingComments?.length || node.trailingComments?.length || node.innerComments?.length) {
       snapshot.hasComments = true;
@@ -668,6 +695,8 @@ function captureCompactMetadata(ast) {
   // A stale typeMap could under-size the packed array and silently discard
   // writes. Reject reuse instead of restoring incomplete declaration links.
   if (declarationsArePacked && declarationOffset !== snapshot.declarations.length) return null;
+  scopeIndexes.clear();
+  variableIndexes.clear();
   // Derived scope IDs, inverse-reference, ancestry, and lineage metadata are
   // intentionally omitted. Retaining per-node copies would increase peak
   // memory, while scope records and forward links can rebuild all four.
@@ -675,7 +704,40 @@ function captureCompactMetadata(ast) {
 }
 
 /**
- * Validate structural correspondence and restore captured detailed metadata.
+ * Validate that a basic rebuild corresponds exactly to one compact snapshot.
+ *
+ * Validation completes before scope or variable objects are allocated. The
+ * large structural arrays are then released because restoration only needs
+ * scope and declaration indexes.
+ *
+ * @example
+ * validateCompactMetadata(snapshot, reparsedAst); // true
+ * snapshot.parentIds; // null: validation-only memory was released.
+ *
+ * @param {CompactMetadataSnapshot|null} snapshot ID-based metadata snapshot.
+ * @param {ASTNode[]} ast Newly parsed basic flat AST.
+ * @return {boolean} Whether structural correspondence is exact.
+ */
+function validateCompactMetadata(snapshot, ast) {
+  if (!snapshot || snapshot.parentIds.length !== ast.length) return false;
+  const scopeCount = snapshot.scopes.length;
+  for (let i = 0; i < ast.length; i++) {
+    // Equal offsets are not unique, so correspondence is proven with traversal
+    // identity: node order, type, parent key, and parent ID must all agree.
+    if (snapshot.types[i] !== ast[i].type || snapshot.parentKeys[i] !== ast[i].parentKey ||
+      snapshot.parentIds[i] !== (ast[i].parentNode?.nodeId ?? -1) ||
+      snapshot.scopeIndexes[i] >= scopeCount) return false;
+  }
+
+  // These arrays dominate validation overlap and have no role in restoration.
+  snapshot.parentIds = null;
+  snapshot.parentKeys = null;
+  snapshot.types = null;
+  return true;
+}
+
+/**
+ * Restore captured detailed metadata after structural validation succeeds.
  *
  * @example
  * const snapshot = captureCompactMetadata(oldAst);
@@ -689,13 +751,7 @@ function captureCompactMetadata(ast) {
  * @return {boolean} Whether validation and metadata restoration succeeded.
  */
 function applyCompactMetadata(snapshot, ast) {
-  if (!snapshot || snapshot.types.length !== ast.length) return false;
-  for (let i = 0; i < ast.length; i++) {
-    // Equal offsets are not unique, so correspondence is proven with traversal
-    // identity: node order, type, parent key, and parent ID must all agree.
-    if (snapshot.types[i] !== ast[i].type || snapshot.parentKeys[i] !== ast[i].parentKey ||
-      snapshot.parentIds[i] !== (ast[i].parentNode?.nodeId ?? -1)) return false;
-  }
+  if (!validateCompactMetadata(snapshot, ast)) return false;
   const variables = snapshot.variables.map(variable => ({
     identifiers: variable.identifiers.map(nodeId => ast[nodeId]),
     name: variable.name,
@@ -764,6 +820,25 @@ function applyCompactMetadata(snapshot, ast) {
   }
   ast[0].allScopes = Object.fromEntries(snapshot.allScopeEntries.map(([scopeId, index]) => [scopeId, scopes[index]]));
   return true;
+}
+
+/**
+ * Detect whether an AST retains raw eslint-scope detail rather than projection.
+ *
+ * Compact scopes intentionally omit `set` and `through`; checking the root
+ * scope avoids trusting constructor options when an Arborist was built from an
+ * existing flat AST.
+ *
+ * @example
+ * hasFullDetailedScopes(generateFlatAST('let value;', {compactScopes: false})); // true
+ * hasFullDetailedScopes(generateFlatAST('let value;', {compactScopes: true})); // false
+ *
+ * @param {ASTNode[]} ast Flat AST to inspect.
+ * @return {boolean} Whether full detailed scope objects are already present.
+ */
+function hasFullDetailedScopes(ast) {
+  const rootScope = ast[0]?.allScopes?.[0] || Object.values(ast[0]?.allScopes || {})[0];
+  return Boolean(rootScope && ('set' in rootScope || 'through' in rootScope));
 }
 
 /**
@@ -946,6 +1021,55 @@ export class Arborist {
   }
 
   /**
+   * Materialize full eslint-scope metadata after compact editing is complete.
+   *
+   * The rebuild is prepared separately and swapped in only after it succeeds.
+   * This keeps the compact AST usable if parsing or scope analysis fails.
+   *
+   * @example
+   * const arborist = new Arborist('const value = 1;', {
+   *   compactScopes: true,
+   *   retainTokens: false,
+   * });
+   * arborist.finalizeScopes() === arborist; // true
+   * 'set' in arborist.ast[0].allScopes[0]; // true
+   *
+   * @example
+   * arborist.replaceNode(literal, replacement);
+   * arborist.finalizeScopes(); // Throws: apply or clear queued changes first.
+   *
+   * @return {this} This Arborist with full detailed scopes.
+   * @throws {Error} When changes are pending or a full rebuild fails.
+   */
+  finalizeScopes() {
+    if (this.getNumberOfChanges() > 0) {
+      throw new Error('Cannot finalize scopes while mutations are pending. Call applyChanges() first.');
+    }
+    if (!this.ast.length) throw new Error('Cannot finalize scopes for an empty AST.');
+
+    const fullOptions = {...this.options, detailed: true, compactScopes: false};
+    if (hasFullDetailedScopes(this.ast)) {
+      // Future rebuilds must stay full even when constructor options did not
+      // describe an existing AST accurately.
+      this.options = fullOptions;
+      return this;
+    }
+
+    const rootNode = this.ast[0];
+    const sourceType = rootNode.sourceType;
+    const script = this.script || rootNode.src || generateCode(rootNode);
+    const fullAst = rebuildFlatAst(script, sourceType, fullOptions);
+    if (!fullAst.length || !hasFullDetailedScopes(fullAst)) {
+      throw new Error('Unable to finalize scopes from the current source.');
+    }
+
+    this.ast = fullAst;
+    this.script = script;
+    this.options = fullOptions;
+    return this;
+  }
+
+  /**
 	 * Apply the queued batch, generate source, and rebuild a validated flat AST.
 	 *
    * Invalid generated source restores the original AST and returns zero.
@@ -964,6 +1088,12 @@ export class Arborist {
 	 * @return {number} The number of modifications made.
 	 */
   applyChanges() {
+    if (this.getNumberOfChanges() === 0) {
+      // Preserve the public call counter while avoiding classification,
+      // snapshots, and rollback closures for the common empty-queue check.
+      ++this.appliedCounter;
+      return 0;
+    }
     let changesCounter = 0;
     let rootNode = this.ast[0];
     const originalSourceType = rootNode?.sourceType;
@@ -989,6 +1119,8 @@ export class Arborist {
       if (restoredAst.length) this.ast = restoredAst;
     };
     try {
+      // The early return above makes this defensive guard effectively free,
+      // while keeping the mutation phase explicitly conditional on its queue.
       if (this.getNumberOfChanges() > 0) {
         originalScript = rootNode?.src ?? (this.script || generateCode(rootNode));
         if (rootNode.isMarked) {
@@ -1007,8 +1139,8 @@ export class Arborist {
             Arborist.mergeComments(trailingCommentTarget, {trailingComments}, 'trailingComments');
           }
         } else {
-          // No parent container can reach the batching threshold when the
-          // complete queue is smaller, so avoid allocating grouping maps.
+        // No parent container can reach the batching threshold when the
+        // complete queue is smaller, so avoid allocating grouping maps.
           const batchedDeletionStates = this.markedForDeletion.length >= adjacentMutationMinimum ?
             buildBatchedDeletionStates(this.ast, this.markedForDeletion) : null;
           for (const targetNodeId of this.markedForDeletion) {

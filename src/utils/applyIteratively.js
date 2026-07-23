@@ -1,24 +1,136 @@
 import {Arborist} from '../arborist.js';
 import {logger} from './logger.js';
-import {createHash} from 'node:crypto';
 
 /**
- * Create a stable digest used to recognize an unchanged Arborist root.
+ * @typedef {object} ApplyIterativelyOptions
+ * @property {number} [maxIterations=500] Maximum complete passes.
+ * @property {'batch'|'sequential'} [mode='sequential'] Rebuild strategy.
+ * @property {import('../types.d.ts').GenerateFlatASTOptions} [arboristOptions] Initial Arborist options.
+ */
+
+const defaultMaxIterations = 500;
+const iterativeModes = new Set(['batch', 'sequential']);
+
+/**
+ * Error raised when batch semantics cannot preserve queued mutations.
+ *
+ * A dedicated error class lets the outer compatibility wrapper continue to
+ * handle ordinary modifier failures while ensuring this unsafe case is fatal.
+ */
+class BatchCompatibilityError extends Error {
+  /**
+   * Create an actionable batch-mode compatibility error.
+   *
+   * @example
+   * throw new BatchCompatibilityError('replaceArborist');
+   *
+   * @param {string} modifierName Modifier that returned a replacement Arborist.
+   */
+  constructor(modifierName) {
+    super(`Modifier "${modifierName}" returned a different Arborist while changes were pending. ` +
+      'Use mode: \'sequential\' when modifiers replace the Arborist or depend on earlier rebuilt output.');
+    this.name = 'BatchCompatibilityError';
+  }
+}
+
+/**
+ * Normalize the backward-compatible numeric limit and the options overload.
  *
  * @example
- * generateHash('const value = 1;') === generateHash('const value = 1;'); // true
+ * normalizeApplyOptions(3); // {maxIterations: 3, mode: 'sequential', arboristOptions: {}}
  *
- * @param {string} str Source text to hash.
- * @return {string} Lowercase SHA-256 digest.
+ * @example
+ * normalizeApplyOptions({mode: 'batch', maxIterations: 10});
+ *
+ * @param {number|ApplyIterativelyOptions|undefined} value Third applyIteratively argument.
+ * @return {Required<Pick<ApplyIterativelyOptions, 'maxIterations'|'mode'>> & {arboristOptions: object}} Normalized options.
  */
-const generateHash = str => createHash('sha256').update(str).digest('hex');
+function normalizeApplyOptions(value) {
+  const options = typeof value === 'number' || value === undefined ?
+    {maxIterations: value ?? defaultMaxIterations} : value;
+  if (!options || typeof options !== 'object' || Array.isArray(options)) {
+    throw new TypeError('applyIteratively options must be a number or an options object.');
+  }
+  const maxIterations = options.maxIterations ?? defaultMaxIterations;
+  const mode = options.mode ?? 'sequential';
+  if (!Number.isSafeInteger(maxIterations) || maxIterations < 0) {
+    throw new RangeError('maxIterations must be a non-negative safe integer.');
+  }
+  if (!iterativeModes.has(mode)) {
+    throw new RangeError(`Unknown applyIteratively mode "${mode}". Expected "batch" or "sequential".`);
+  }
+  if (options.arboristOptions !== undefined &&
+    (!options.arboristOptions || typeof options.arboristOptions !== 'object' ||
+      Array.isArray(options.arboristOptions))) {
+    throw new TypeError('arboristOptions must be an object.');
+  }
+  return {maxIterations, mode, arboristOptions: options.arboristOptions || {}};
+}
 
 /**
- * Apply modifiers repeatedly until one complete pass leaves the source unchanged.
+ * Report whether constructing a message for one logger level is worthwhile.
  *
- * Each modifier receives the latest Arborist and must return an Arborist. It
- * may queue changes on the existing instance or return a replacement instance.
- * Queued changes are applied before the next modifier runs.
+ * @example
+ * logger.setLogLevelNone();
+ * isLogEnabled(logger.logLevels.DEBUG); // false
+ *
+ * @param {number} level Logger severity.
+ * @return {boolean} Whether the shared logger would emit that severity.
+ */
+function isLogEnabled(level) {
+  return level >= logger.currentLogLevel;
+}
+
+/**
+ * Run one modifier while preserving ordinary-error compatibility.
+ *
+ * A modifier that throws may already have queued valid changes. The same
+ * Arborist is therefore returned so later modifiers or the batch commit can
+ * still apply that queue, matching the existing behavior.
+ *
+ * @example
+ * runModifier(arborist, () => {
+ *   arborist.replaceNode(target, replacement);
+ *   throw new Error('optional cleanup failed');
+ * }, 0); // Returns arborist with its replacement still queued.
+ *
+ * @param {Arborist} arborist Current mutation session.
+ * @param {(arborist: Arborist) => Arborist} modifier Modifier to execute.
+ * @param {number} iteration Zero-based iteration index.
+ * @return {Arborist} Returned Arborist, or the current one after an ordinary error.
+ */
+function runModifier(arborist, modifier, iteration) {
+  const debugEnabled = isLogEnabled(logger.logLevels.DEBUG);
+  const errorEnabled = isLogEnabled(logger.logLevels.ERROR);
+  const modifierName = modifier.name || '<anonymous>';
+  const startTime = debugEnabled ? Date.now() : 0;
+  try {
+    if (debugEnabled) logger.debug(`\t[!] Running ${modifierName}...`);
+    const result = modifier(arborist);
+    if (!result || typeof result.getNumberOfChanges !== 'function' || !Array.isArray(result.ast)) {
+      throw new TypeError(`Modifier "${modifierName}" must return an Arborist.`);
+    }
+    return result;
+  } catch (error) {
+    if (error instanceof BatchCompatibilityError) throw error;
+    if (errorEnabled) {
+      logger.error(`[-] Error in ${modifierName} (iteration #${iteration + 1}): ${error}\n${error.stack}`);
+    }
+    return arborist;
+  } finally {
+    if (debugEnabled) {
+      logger.debug(`\t\t[!] Running ${modifierName} completed in ` +
+        `${((Date.now() - startTime) / 1000).toFixed(3)} seconds`);
+    }
+  }
+}
+
+/**
+ * Apply modifiers repeatedly until one complete pass leaves source unchanged.
+ *
+ * Sequential mode preserves same-pass visibility by rebuilding after each
+ * modifier. Batch mode lets independent modifiers share one AST and performs
+ * at most one rebuild per iteration.
  *
  * @example
  * const replaceOne = arborist => {
@@ -29,63 +141,77 @@ const generateHash = str => createHash('sha256').update(str).digest('hex');
  * applyIteratively('const value = 1;', [replaceOne]); // 'const value = 2;'
  *
  * @example
- * // Self-reproducing transformations are bounded explicitly.
- * applyIteratively(source, [modifier], 10);
+ * applyIteratively(source, [renameA, replaceLiteral], {
+ *   mode: 'batch',
+ *   maxIterations: 10,
+ *   arboristOptions: {compactScopes: true, retainTokens: false},
+ * });
  *
- * @param {string} script The target script to run the functions on.
+ * @param {string} script Target source.
  * @param {Array<(arborist: Arborist) => Arborist>} funcs Ordered modifier functions.
- * @param {number} [maxIterations=500] Maximum number of complete passes.
- * @return {string} The possibly modified script.
+ * @param {number|ApplyIterativelyOptions} [maxIterationsOrOptions=500] Numeric legacy limit or options.
+ * @return {string} Possibly modified source.
  */
-function applyIteratively(script, funcs, maxIterations = 500) {
-  let scriptSnapshot = '';
-  let currentIteration = 0;
-  let changesCounter = 0;
-  let iterationsCounter = 0;
-  try {
-    let scriptHash = generateHash(script);
-    let arborist = new Arborist(script);
-    while (arborist.ast?.length && scriptSnapshot !== script && currentIteration < maxIterations) {
-      const iterationStartTime = Date.now();
-      scriptSnapshot = script;
+function applyIteratively(script, funcs, maxIterationsOrOptions = defaultMaxIterations) {
+  const {maxIterations, mode, arboristOptions} = normalizeApplyOptions(maxIterationsOrOptions);
+  if (maxIterations === 0) return script;
 
-      // The marker distinguishes mutation of this Arborist from a modifier
-      // returning a newly constructed Arborist for different source.
-      arborist.ast[0].scriptHash = scriptHash;
-      for (let i = 0; i <  funcs.length; i++) {
-        const func = funcs[i];
-        const funcStartTime = Date.now();
-        try {
-          logger.debug(`\t[!] Running ${func.name}...`);
-          arborist = func(arborist);
-          if (!arborist.ast?.length) break;
-          // A new Arborist lacks the marker, so treat the replacement itself
-          // as a change even if it has no queued node mutations.
-          const numberOfNewChanges = arborist.getNumberOfChanges() + +!arborist.ast[0].scriptHash;
-          if (numberOfNewChanges) {
-            changesCounter += numberOfNewChanges;
-            logger.log(`\t[+] ${func.name} applying ${numberOfNewChanges} new changes!`);
-            arborist.applyChanges();
-            script = arborist.script;
-            scriptHash = generateHash(script);
-            arborist.ast[0].scriptHash = scriptHash;
+  let iteration = 0;
+  try {
+    let arborist = new Arborist(script, arboristOptions);
+    while (arborist.ast?.length && iteration < maxIterations) {
+      const iterationSource = arborist.script;
+      const logEnabled = isLogEnabled(logger.logLevels.LOG);
+      const iterationStartTime = logEnabled ? Date.now() : 0;
+      let changesCounter = 0;
+
+      for (let i = 0; i < funcs.length; i++) {
+        const modifier = funcs[i];
+        const previousArborist = arborist;
+        const pendingBefore = previousArborist.getNumberOfChanges();
+        const nextArborist = runModifier(previousArborist, modifier, iteration);
+        const wasReplaced = nextArborist !== previousArborist;
+
+        if (mode === 'batch' && wasReplaced && previousArborist.getNumberOfChanges() > 0) {
+          // Switching instances would orphan mutations queued by this or an
+          // earlier modifier, so batch mode must never guess which tree wins.
+          throw new BatchCompatibilityError(modifier.name || '<anonymous>');
+        }
+        arborist = nextArborist;
+        if (!arborist.ast?.length) break;
+
+        if (mode === 'sequential') {
+          const queuedChanges = arborist.getNumberOfChanges();
+          if (queuedChanges) {
+            changesCounter += arborist.applyChanges();
+          } else if (wasReplaced && arborist.script !== previousArborist.script) {
+            changesCounter++;
           }
-        } catch (e) {
-          logger.error(`[-] Error in ${func.name} (iteration #${iterationsCounter}): ${e}\n${e.stack}`);
-        } finally {
-          logger.debug(`\t\t[!] Running ${func.name} completed in ` +
-              `${((Date.now() - funcStartTime) / 1000).toFixed(3)} seconds`);
+        } else if (wasReplaced && pendingBefore === 0 && arborist.script !== previousArborist.script) {
+          changesCounter++;
         }
       }
-      ++currentIteration;
-      ++iterationsCounter;
-      logger.log(`[+] ==> Iteartion #${iterationsCounter} completed in ${(Date.now() - iterationStartTime) / 1000} seconds` +
-          ` with ${changesCounter ? changesCounter : 'no'} changes (${arborist.ast?.length || '???'} nodes)`);
-      changesCounter =  0;
+
+      if (mode === 'batch' && arborist.ast?.length) {
+        const queuedChanges = arborist.getNumberOfChanges();
+        if (queuedChanges) changesCounter += arborist.applyChanges();
+      }
+
+      script = arborist.script;
+      iteration++;
+      if (logEnabled) {
+        logger.log(`[+] ==> Iteration #${iteration} completed in ${(Date.now() - iterationStartTime) / 1000} seconds` +
+          ` with ${changesCounter || 'no'} changes (${arborist.ast?.length || '???'} nodes)`);
+      }
+      // Generated source is the authoritative convergence signal. A rejected
+      // edit or a same-source replacement Arborist should stop immediately.
+      if (script === iterationSource) break;
     }
-    if (changesCounter) script = arborist.script;
-  } catch (e) {
-    logger.error(`[-] Error on iteration #${iterationsCounter}: ${e}\n${e.stack}`);
+  } catch (error) {
+    if (error instanceof BatchCompatibilityError) throw error;
+    if (isLogEnabled(logger.logLevels.ERROR)) {
+      logger.error(`[-] Error on iteration #${iteration + 1}: ${error}\n${error.stack}`);
+    }
   }
   return script;
 }

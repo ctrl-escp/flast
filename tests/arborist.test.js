@@ -833,4 +833,75 @@ describe('Arborist edge case tests', () => {
     assert.equal(arb.ast[0].tokens, undefined);
     assert.match(arb.script, /value = 2/);
   });
+
+  it('Falls back to a full rebuild when typeMap is stale', () => {
+    const options = {compactScopes: true, retainTokens: false};
+    const arb = new Arborist('const value = 1; consume(value);', options);
+    const literal = arb.ast.find(node => node.type === 'Literal');
+    arb.ast[0].typeMap.Identifier.pop();
+    arb.replaceNode(literal, {type: 'Literal', value: 2, raw: '2'});
+
+    assert.equal(arb.applyChanges(), 1);
+    assert.equal(arb.script, 'const value = 2;\nconsume(value);');
+    assert.ok(arb.ast.every((node, index) => node.nodeId === index && arb.ast[node.nodeId] === node));
+    assert.deepEqual(summarizeDetailedNodes(arb.ast), summarizeDetailedNodes(generateFlatAST(arb.script, options)));
+  });
+
+  it('Finalizes compact scopes atomically and preserves configured metadata', () => {
+    const code = '// header\nwith (target) { const value = 1; use(value); }';
+    const arb = new Arborist(code, {compactScopes: true, retainTokens: false});
+    const compactAst = arb.ast;
+
+    assert.equal(arb.finalizeScopes(), arb);
+    assert.notEqual(arb.ast, compactAst);
+    assert.equal(arb.ast[0].sourceType, 'script');
+    assert.equal(arb.ast[0].tokens, undefined);
+    assert.equal(arb.options.compactScopes, false);
+    assert.equal(arb.options.detailed, true);
+    assert.ok(arb.ast[0].body[0].leadingComments.length);
+    assert.ok('set' in arb.ast[0].allScopes[0] || 'through' in arb.ast[0].allScopes[0]);
+    assert.ok(arb.ast.every((node, index) => node.nodeId === index && arb.ast[node.nodeId] === node));
+  });
+
+  it('Leaves an already full detailed AST unchanged during finalization', () => {
+    const arb = new Arborist('const value = 1;');
+    const originalAst = arb.ast;
+
+    assert.equal(arb.finalizeScopes(), arb);
+    assert.equal(arb.ast, originalAst);
+  });
+
+  it('Rejects finalization while mutations are pending', () => {
+    const arb = new Arborist('const value = 1;', {compactScopes: true});
+    const literal = arb.ast.find(node => node.type === 'Literal');
+    arb.replaceNode(literal, {type: 'Literal', value: 2, raw: '2'});
+
+    assert.throws(() => arb.finalizeScopes(), /mutations are pending/);
+    assert.equal(arb.ast.find(node => node.type === 'Literal').value, 1);
+    assert.equal(arb.getNumberOfChanges(), 1);
+  });
+
+  it('Keeps compact state untouched when finalization fails', () => {
+    const options = {compactScopes: true, retainTokens: false};
+    const arb = new Arborist('const value = 1;', options);
+    const compactAst = arb.ast;
+    const compactOptions = arb.options;
+    arb.script = 'const {';
+
+    assert.throws(() => arb.finalizeScopes(), /Unable to finalize scopes/);
+    assert.equal(arb.ast, compactAst);
+    assert.equal(arb.options, compactOptions);
+    assert.equal(arb.options.compactScopes, true);
+  });
+
+  it('Keeps later mutations in full-scope mode after finalization', () => {
+    const arb = new Arborist('const value = 1;', {compactScopes: true, retainTokens: true});
+    arb.finalizeScopes();
+    const literal = arb.ast.find(node => node.type === 'Literal');
+    arb.replaceNode(literal, {type: 'Literal', value: 2, raw: '2'});
+
+    assert.equal(arb.applyChanges(), 1);
+    assert.ok(arb.ast[0].tokens.length);
+    assert.ok('set' in arb.ast[0].allScopes[0] || 'through' in arb.ast[0].allScopes[0]);
+  });
 });
