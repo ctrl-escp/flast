@@ -17,7 +17,6 @@ import {generateCode, generateFlatAST} from './flast.js';
  * @property {Int32Array} declarations Per-node declaration IDs, or -1.
  * @property {Int32Array} parentIds Per-node parent IDs, or -1.
  * @property {string[]} parentKeys Per-node structural keys.
- * @property {Int32Array} scopeIds Per-node declared scope IDs, or -1.
  * @property {Int32Array} scopeIndexes Per-node indexes into the scope records.
  * @property {string[]} types Per-node ESTree types.
  * @property {boolean} hasComments Whether any parser or attached comments must be preserved.
@@ -571,7 +570,6 @@ function captureCompactMetadata(ast) {
     declarations: new Int32Array(nodeCount).fill(-1),
     parentIds: new Int32Array(nodeCount).fill(-1),
     parentKeys: new Array(nodeCount),
-    scopeIds: new Int32Array(nodeCount).fill(-1),
     scopeIndexes: new Int32Array(nodeCount).fill(-1),
     types: new Array(nodeCount),
     hasComments: Boolean(ast[0].comments?.length),
@@ -647,12 +645,11 @@ function captureCompactMetadata(ast) {
     if (node.leadingComments?.length || node.trailingComments?.length || node.innerComments?.length) {
       snapshot.hasComments = true;
     }
-    if (node.scopeId !== undefined) snapshot.scopeIds[i] = node.scopeId;
     if (node.declNode) snapshot.declarations[i] = node.declNode.nodeId;
   }
-  // Derived inverse-reference, ancestry, and lineage arrays are intentionally
-  // omitted. Retaining them would increase peak memory while the replacement
-  // AST is being parsed, and all three can be rebuilt from captured forward links.
+  // Derived scope IDs, inverse-reference, ancestry, and lineage metadata are
+  // intentionally omitted. Retaining per-node copies would increase peak
+  // memory, while scope records and forward links can rebuild all four.
   return snapshot;
 }
 
@@ -701,14 +698,18 @@ function applyCompactMetadata(snapshot, ast) {
   // resolved references preserve shared object identity during the second pass.
   for (let i = 0; i < scopes.length; i++) {
     const record = snapshot.scopes[i];
-    scopes[i].upper = scopes[record.upperIndex] || null;
-    scopes[i].variableScope = scopes[record.variableScopeIndex];
-    scopes[i].childScopes = record.childIndexes.map(index => scopes[index]);
-    scopes[i].variables = record.variableIndexes.map(index => variables[index]);
-    scopes[i].references = record.referenceRecords.map(([nodeId, variableIndex]) => ({
+    const scope = scopes[i];
+    scope.upper = scopes[record.upperIndex] || null;
+    scope.variableScope = scopes[record.variableScopeIndex];
+    scope.childScopes = record.childIndexes.map(index => scopes[index]);
+    scope.variables = record.variableIndexes.map(index => variables[index]);
+    scope.references = record.referenceRecords.map(([nodeId, variableIndex]) => ({
       identifier: ast[nodeId],
       resolved: variables[variableIndex],
     }));
+    // Scope IDs belong to scope-introducing block nodes, so the scope record
+    // already contains both values needed to restore them without an N-node array.
+    if (record.scopeId !== undefined) scope.block.scopeId = record.scopeId;
   }
   for (let i = 0; i < ast.length; i++) {
     const node = ast[i];
@@ -721,7 +722,6 @@ function applyCompactMetadata(snapshot, ast) {
     // A node either inherits its parent's scope or enters one new child scope.
     // Identity avoids rescanning the lineage array for every restored node.
     if (!parent || node.scope !== parent.scope) node.lineage.push(node.scope.scopeId);
-    if (snapshot.scopeIds[i] !== -1) node.scopeId = snapshot.scopeIds[i];
     if (snapshot.declarations[i] !== -1) {
       node.declNode = ast[snapshot.declarations[i]];
       // Preorder restoration matches identifier-linking order, so rebuilding
