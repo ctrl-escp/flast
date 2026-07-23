@@ -96,6 +96,25 @@ describe('Functionality tests', () => {
     assert.equal(compactAst[0].tokens, undefined, 'Tokens should be released when retainTokens is false.');
     assert.match(generateCode(compactAst[0]), /keep this comment/);
   });
+  it('Avoids lexer arrays for comment-free token-free parsing', () => {
+    const ast = generateFlatAST('const value = 1;', {retainTokens: false});
+
+    assert.equal(ast[0].tokens, undefined);
+    assert.equal(ast[0].comments, undefined);
+  });
+  it('Preserves nonstandard comment forms when tokens are not retained', () => {
+    const fixtures = [
+      '#!/usr/bin/env node\nconst value = 1;',
+      '<!-- legacy comment\nconst value = 1;',
+    ];
+
+    for (const code of fixtures) {
+      const ast = generateFlatAST(code, {retainTokens: false});
+      assert.ok(ast[0].comments?.length, `Comment syntax was not detected in: ${code}`);
+      assert.ok(ast[0].body[0].leadingComments?.length, `Comment was not attached in: ${code}`);
+      assert.equal(ast[0].tokens, undefined);
+    }
+  });
   it('Verify a script is parsed in "sloppy mode" if strict mode is restricting parsing', () => {
     const code = 'let a; delete a;';
     let ast = [];

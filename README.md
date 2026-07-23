@@ -324,7 +324,7 @@ console.log(applyIteratively('const x = 1 + 2 + 3;', [foldSimpleMath]));
 - Use `Arborist` for structural edits.
 - Re-parse or rely on `applyChanges()` / `applyIteratively()` whenever correctness matters.
 - Treat `detailed: false` as a performance mode for cases where you do not need scope or identifier metadata.
-- Use `retainTokens: false` when attached comments are needed but callers do not inspect `ast[0].tokens`; Arborist preserves this option across rebuilds.
+- Use `retainTokens: false` when attached comments are needed but callers do not inspect `ast[0].tokens`; sources without possible comment markers then avoid allocating lexer arrays entirely, and Arborist preserves this option across rebuilds.
 - Use `compactScopes: true` when callers only need flAST's documented scope relationships, not additional `eslint-scope` internals such as `set` or `through`.
 - Arborist can reuse compact scope metadata for verified literal and operator-only replacements. It always regenerates source and reparses the structural AST; unsupported mutations fall back to full scope analysis.
 

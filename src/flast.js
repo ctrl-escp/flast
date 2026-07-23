@@ -10,6 +10,19 @@ const currentYear = (new Date()).getFullYear();
 const sourceType = 'module';
 
 /**
+ * Check whether source text may contain a comment syntax supported by Espree.
+ * @param {string} inputCode JavaScript source.
+ * @return {boolean} Whether parsing may need comment and token arrays for attachment.
+ */
+function mayContainComments(inputCode) {
+  // False positives inside strings or regular expressions only retain the
+  // rich parse path. Cover hashbang and legacy script comments so this test
+  // can never create a false negative that silently drops source comments.
+  return inputCode.includes('//') || inputCode.includes('/*') || inputCode.includes('#!') ||
+    inputCode.includes('<!--') || inputCode.includes('-->');
+}
+
+/**
  * @param {string} inputCode
  * @param {ParseCodeOptions} [opts] Additional options for espree
  * @return {ASTRootNode} The root of the AST
@@ -89,7 +102,12 @@ function generateCode(rootNode, opts = {}) {
  */
 function generateRootNode(inputCode, opts = {}) {
   opts = {...generateFlatASTDefaultOptions, ...opts};
-  const parseOpts = opts.parseOpts || {};
+  let parseOpts = opts.parseOpts || {};
+  if (!opts.retainTokens && !mayContainComments(inputCode)) {
+    // Comment attachment is the only reason a token stream is needed here.
+    // Avoiding both arrays reduces parse work and transient memory together.
+    parseOpts = {...parseOpts, comment: false, tokens: false};
+  }
   let rootNode = null;
   try {
     rootNode = parseCode(inputCode, parseOpts);

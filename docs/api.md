@@ -64,6 +64,8 @@ The main flAST entry point. Returns an ordered flat array of enriched nodes.
 #### `retainTokens?: boolean`
 - Default: `true`
 - When `false`, parser tokens are released after comments are attached
+- Sources with no possible comment marker skip token and comment allocation entirely when this is `false`
+- Detection includes line/block comments, hashbangs, and legacy HTML comments; ambiguous markers inside strings conservatively keep the rich parse path
 - Reduces retained AST memory while preserving attached comments; use the default if callers read `ast[0].tokens`
 - Planned breaking-version default: `false`; callers that need `ast[0].tokens` should set `retainTokens: true` explicitly
 
