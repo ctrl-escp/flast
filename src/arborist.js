@@ -14,7 +14,8 @@ import {generateCode, generateFlatAST} from './flast.js';
 
 /**
  * @typedef {object} CompactMetadataSnapshot
- * @property {Int32Array} declarations Per-node declaration IDs, or -1.
+ * @property {Int32Array} declarations Packed ID pairs or a dense per-node declaration map.
+ * @property {boolean} declarationsArePacked Whether declarations contains reference/declaration pairs.
  * @property {Int32Array} parentIds Per-node parent IDs, or -1.
  * @property {string[]} parentKeys Per-node structural keys.
  * @property {Int32Array} scopeIndexes Per-node indexes into the scope records.
@@ -566,14 +567,23 @@ function classifyMutationBatch(replacements, deletions) {
 function captureCompactMetadata(ast) {
   if (!ast[0]?.allScopes) return null;
   const nodeCount = ast.length;
+  const identifiers = ast[0].typeMap?.Identifier;
+  if (!Array.isArray(identifiers)) return null;
+  let declarationCount = 0;
+  for (let i = 0; i < identifiers.length; i++) {
+    if (identifiers[i].declNode) declarationCount++;
+  }
+  const declarationsArePacked = declarationCount * 2 < nodeCount;
   const snapshot = {
-    declarations: new Int32Array(nodeCount).fill(-1),
+    declarations: new Int32Array(declarationsArePacked ? declarationCount * 2 : nodeCount),
+    declarationsArePacked,
     parentIds: new Int32Array(nodeCount).fill(-1),
     parentKeys: new Array(nodeCount),
     scopeIndexes: new Int32Array(nodeCount).fill(-1),
     types: new Array(nodeCount),
     hasComments: Boolean(ast[0].comments?.length),
   };
+  if (!declarationsArePacked) snapshot.declarations.fill(-1);
   const scopeIndexes = new Map();
   const scopes = [];
   const pendingScopes = Object.values(ast[0].allScopes);
@@ -631,6 +641,7 @@ function captureCompactMetadata(ast) {
   snapshot.allScopeEntries = Object.entries(ast[0].allScopes)
     .map(([scopeId, scope]) => [scopeId, scopeIndexes.get(scope)]);
 
+  let declarationOffset = 0;
   for (let i = 0; i < nodeCount; i++) {
     const node = ast[i];
     if (!node.scope) return null;
@@ -645,8 +656,18 @@ function captureCompactMetadata(ast) {
     if (node.leadingComments?.length || node.trailingComments?.length || node.innerComments?.length) {
       snapshot.hasComments = true;
     }
-    if (node.declNode) snapshot.declarations[i] = node.declNode.nodeId;
+    if (node.declNode) {
+      if (declarationsArePacked) {
+        snapshot.declarations[declarationOffset++] = i;
+        snapshot.declarations[declarationOffset++] = node.declNode.nodeId;
+      } else {
+        snapshot.declarations[i] = node.declNode.nodeId;
+      }
+    }
   }
+  // A stale typeMap could under-size the packed array and silently discard
+  // writes. Reject reuse instead of restoring incomplete declaration links.
+  if (declarationsArePacked && declarationOffset !== snapshot.declarations.length) return null;
   // Derived scope IDs, inverse-reference, ancestry, and lineage metadata are
   // intentionally omitted. Retaining per-node copies would increase peak
   // memory, while scope records and forward links can rebuild all four.
@@ -722,11 +743,23 @@ function applyCompactMetadata(snapshot, ast) {
     // A node either inherits its parent's scope or enters one new child scope.
     // Identity avoids rescanning the lineage array for every restored node.
     if (!parent || node.scope !== parent.scope) node.lineage.push(node.scope.scopeId);
-    if (snapshot.declarations[i] !== -1) {
-      node.declNode = ast[snapshot.declarations[i]];
-      // Preorder restoration matches identifier-linking order, so rebuilding
-      // the inverse array with push() also preserves public reference order.
+  }
+  const declarations = snapshot.declarations;
+  if (snapshot.declarationsArePacked) {
+    for (let i = 0; i < declarations.length; i += 2) {
+      const node = ast[declarations[i]];
+      node.declNode = ast[declarations[i + 1]];
+      // Packed records were captured in preorder, so rebuilding the inverse
+      // array with push() also preserves public reference order.
       node.declNode.references.push(node);
+    }
+  } else {
+    // Identifier-heavy programs use fewer integers in a dense node-indexed
+    // array than in two-integer records for every resolved reference.
+    for (let i = 0; i < declarations.length; i++) {
+      if (declarations[i] === -1) continue;
+      ast[i].declNode = ast[declarations[i]];
+      ast[i].declNode.references.push(ast[i]);
     }
   }
   ast[0].allScopes = Object.fromEntries(snapshot.allScopeEntries.map(([scopeId, index]) => [scopeId, scopes[index]]));

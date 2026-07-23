@@ -590,6 +590,20 @@ describe('Arborist edge case tests', () => {
     assert.deepEqual(unused.references, []);
   });
 
+  it('Preserves declaration links in identifier-dense metadata snapshots', () => {
+    const references = Array.from({length: 100}, () => 'value').join(', ');
+    const code = `const value = 1; consume(${references});`;
+    const options = {compactScopes: true, retainTokens: false};
+    const arb = new Arborist(code, options);
+    const literal = arb.ast.find(node => node.type === 'Literal');
+    arb.replaceNode(literal, {type: 'Literal', value: 2, raw: '2'});
+
+    assert.equal(arb.applyChanges(), 1);
+    const oracle = generateFlatAST(arb.script, options);
+    assert.deepEqual(summarizeDetailedNodes(arb.ast), summarizeDetailedNodes(oracle));
+    assert.deepEqual(summarizeDetailedScopes(arb.ast), summarizeDetailedScopes(oracle));
+  });
+
   it('Reconstructs scope IDs from compact scope records', () => {
     const code = `
       const value = 1;

@@ -138,7 +138,10 @@ With `compactScopes: true`, a replacement batch is eligible for a metadata-reuse
 
 Declaration `references` arrays are also reconstructed as the inverse of saved
 `declNode` links. This avoids retaining duplicate forward and reverse reference
-arrays while the old and new ASTs overlap in memory.
+arrays while the old and new ASTs overlap in memory. Declaration links are
+stored as packed reference/declaration ID pairs when sparse. Identifier-dense
+programs retain the dense node-indexed representation when it requires fewer
+integers than packed pairs.
 
 Scope IDs are restored directly from compact scope records and their block node
 IDs, avoiding another typed array sized to the complete AST.
