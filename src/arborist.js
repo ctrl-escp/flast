@@ -667,7 +667,10 @@ export class Arborist {
             Arborist.mergeComments(trailingCommentTarget, {trailingComments}, 'trailingComments');
           }
         } else {
-          const batchedDeletionStates = buildBatchedDeletionStates(this.ast, this.markedForDeletion);
+          // No parent container can reach the batching threshold when the
+          // complete queue is smaller, so avoid allocating grouping maps.
+          const batchedDeletionStates = this.markedForDeletion.length >= adjacentMutationMinimum ?
+            buildBatchedDeletionStates(this.ast, this.markedForDeletion) : null;
           for (const targetNodeId of this.markedForDeletion) {
             try {
               const targetNode = this.ast[targetNodeId];
@@ -680,7 +683,7 @@ export class Arborist {
                   ++changesCounter;
                 } else if (Array.isArray(parent[targetNode.parentKey])) {
                   const container = parent[targetNode.parentKey];
-                  const deletionState = batchedDeletionStates.get(container);
+                  const deletionState = batchedDeletionStates?.get(container);
                   const idx = deletionState?.indexes.get(targetNode) ?? container.indexOf(targetNode);
                   if (idx !== -1) {
                     let previousIndex = idx - 1;
@@ -728,14 +731,17 @@ export class Arborist {
               this.logger.debug(`[-] Unable to delete node: ${e}`);
             }
           }
-          for (const state of batchedDeletionStates.values()) {
-            compactDeletedSlots(state.container);
-            state.indexes.clear();
-            state.previous = null;
-            state.next = null;
+          if (batchedDeletionStates) {
+            for (const state of batchedDeletionStates.values()) {
+              compactDeletedSlots(state.container);
+              state.indexes.clear();
+              state.previous = null;
+              state.next = null;
+            }
+            batchedDeletionStates.clear();
           }
-          batchedDeletionStates.clear();
-          const batchedReplacementIndexes = buildBatchedReplacementIndexes(this.replacements);
+          const batchedReplacementIndexes = this.replacements.length >= adjacentMutationMinimum ?
+            buildBatchedReplacementIndexes(this.replacements) : null;
           for (const [targetNode, replacementNode] of this.replacements) {
             try {
               if (targetNode) {
@@ -748,7 +754,7 @@ export class Arborist {
                   ++changesCounter;
                 } else if (Array.isArray(parent[targetNode.parentKey])) {
                   const container = parent[targetNode.parentKey];
-                  const indexes = batchedReplacementIndexes.get(container);
+                  const indexes = batchedReplacementIndexes?.get(container);
                   const idx = indexes?.get(targetNode) ?? container.indexOf(targetNode);
                   if (idx === -1) continue;
                   container[idx] = replacementNode;
@@ -762,8 +768,10 @@ export class Arborist {
               this.logger.debug(`[-] Unable to replace node: ${e}`);
             }
           }
-          for (const indexes of batchedReplacementIndexes.values()) indexes.clear();
-          batchedReplacementIndexes.clear();
+          if (batchedReplacementIndexes) {
+            for (const indexes of batchedReplacementIndexes.values()) indexes.clear();
+            batchedReplacementIndexes.clear();
+          }
         }
       }
       if (changesCounter) {

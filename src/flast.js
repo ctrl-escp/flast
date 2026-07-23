@@ -216,8 +216,11 @@ function linkIdentifierRelations(typeMap, scopes) {
  * @return {ASTAllScopes}
  */
 function compactScopeGraph(scopes) {
-  const projectedScopes = new WeakMap();
-  const projectedVariables = new WeakMap();
+  // The raw scope graph remains strongly reachable throughout projection, so
+  // weak keys cannot be collected here. Plain maps have cheaper hot lookups
+  // and are explicitly cleared before returning the compact graph.
+  const projectedScopes = new Map();
+  const projectedVariables = new Map();
   /**
    * Project an eslint-scope variable into flAST's documented representation.
    * @param {object|null|undefined} variable eslint-scope variable.
@@ -271,6 +274,8 @@ function compactScopeGraph(scopes) {
   const compactScopes = {};
   for (const scopeId in scopes) compactScopes[scopeId] = projectedScopes.get(scopes[scopeId]);
   scopes[0].block.allScopes = compactScopes;
+  projectedScopes.clear();
+  projectedVariables.clear();
   return compactScopes;
 }
 
