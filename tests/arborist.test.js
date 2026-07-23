@@ -568,6 +568,28 @@ describe('Arborist edge case tests', () => {
     assert.deepEqual(summarizeDetailedScopes(arb.ast), summarizeDetailedScopes(oracle));
   });
 
+  it('Reconstructs declaration reference arrays from saved declaration links', () => {
+    const code = `
+      var repeated;
+      var repeated;
+      const unused = 1;
+      function read() {
+        return repeated;
+      }
+    `;
+    const options = {compactScopes: true, retainTokens: false};
+    const arb = new Arborist(code, options);
+    const literal = arb.ast.find(node => node.type === 'Literal');
+    arb.replaceNode(literal, {type: 'Literal', value: 2, raw: '2'});
+
+    assert.equal(arb.applyChanges(), 1);
+    const oracle = generateFlatAST(arb.script, options);
+    assert.deepEqual(summarizeDetailedNodes(arb.ast), summarizeDetailedNodes(oracle));
+    assert.deepEqual(summarizeDetailedScopes(arb.ast), summarizeDetailedScopes(oracle));
+    const unused = arb.ast.find(node => node.type === 'Identifier' && node.name === 'unused');
+    assert.deepEqual(unused.references, []);
+  });
+
   it('Fully rebuilds metadata for identifier replacements', () => {
     const arb = new Arborist('let first = 1, second = 2; first;', {compactScopes: true});
     const reference = arb.ast.find(node => node.type === 'Identifier' && node.name === 'first' && node.declNode);

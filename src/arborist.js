@@ -17,7 +17,6 @@ import {generateCode, generateFlatAST} from './flast.js';
  * @property {Int32Array} declarations Per-node declaration IDs, or -1.
  * @property {Int32Array} parentIds Per-node parent IDs, or -1.
  * @property {string[]} parentKeys Per-node structural keys.
- * @property {Array<number[]|undefined>} references Per-node reference IDs.
  * @property {Int32Array} scopeIds Per-node declared scope IDs, or -1.
  * @property {Int32Array} scopeIndexes Per-node indexes into the scope records.
  * @property {string[]} types Per-node ESTree types.
@@ -572,7 +571,6 @@ function captureCompactMetadata(ast) {
     declarations: new Int32Array(nodeCount).fill(-1),
     parentIds: new Int32Array(nodeCount).fill(-1),
     parentKeys: new Array(nodeCount),
-    references: new Array(nodeCount),
     scopeIds: new Int32Array(nodeCount).fill(-1),
     scopeIndexes: new Int32Array(nodeCount).fill(-1),
     types: new Array(nodeCount),
@@ -651,11 +649,10 @@ function captureCompactMetadata(ast) {
     }
     if (node.scopeId !== undefined) snapshot.scopeIds[i] = node.scopeId;
     if (node.declNode) snapshot.declarations[i] = node.declNode.nodeId;
-    if (node.references) snapshot.references[i] = node.references.map(reference => reference.nodeId);
   }
-  // Ancestry and lineage are intentionally omitted: both can be reconstructed
-  // from the new parent/scope links. Retaining their old per-node arrays would
-  // increase peak memory while the replacement AST is being parsed.
+  // Derived inverse-reference, ancestry, and lineage arrays are intentionally
+  // omitted. Retaining them would increase peak memory while the replacement
+  // AST is being parsed, and all three can be rebuilt from captured forward links.
   return snapshot;
 }
 
@@ -685,6 +682,12 @@ function applyCompactMetadata(snapshot, ast) {
     identifiers: variable.identifiers.map(nodeId => ast[nodeId]),
     name: variable.name,
   }));
+  for (let i = 0; i < variables.length; i++) {
+    const identifiers = variables[i].identifiers;
+    // Declaration reference arrays are the inverse of saved declNode links.
+    // Initialize every declaration, including declarations with no references.
+    for (let j = 0; j < identifiers.length; j++) identifiers[j].references = [];
+  }
   const scopes = snapshot.scopes.map(scope => ({
     block: ast[scope.blockId],
     childScopes: [],
@@ -719,8 +722,12 @@ function applyCompactMetadata(snapshot, ast) {
     // Identity avoids rescanning the lineage array for every restored node.
     if (!parent || node.scope !== parent.scope) node.lineage.push(node.scope.scopeId);
     if (snapshot.scopeIds[i] !== -1) node.scopeId = snapshot.scopeIds[i];
-    if (snapshot.declarations[i] !== -1) node.declNode = ast[snapshot.declarations[i]];
-    if (snapshot.references[i]) node.references = snapshot.references[i].map(nodeId => ast[nodeId]);
+    if (snapshot.declarations[i] !== -1) {
+      node.declNode = ast[snapshot.declarations[i]];
+      // Preorder restoration matches identifier-linking order, so rebuilding
+      // the inverse array with push() also preserves public reference order.
+      node.declNode.references.push(node);
+    }
   }
   ast[0].allScopes = Object.fromEntries(snapshot.allScopeEntries.map(([scopeId, index]) => [scopeId, scopes[index]]));
   return true;

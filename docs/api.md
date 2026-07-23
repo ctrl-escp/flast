@@ -136,6 +136,10 @@ With `compactScopes: true`, a replacement batch is eligible for a metadata-reuse
    being retained in the snapshot.
 7. After reparsing, node count, node type, `parentKey`, and parent `nodeId` match at every AST-array index.
 
+Declaration `references` arrays are also reconstructed as the inverse of saved
+`declNode` links. This avoids retaining duplicate forward and reverse reference
+arrays while the old and new ASTs overlap in memory.
+
 Operand identity is required so an operator replacement cannot introduce changed identifiers or bindings under an otherwise approved expression type. Failure of any condition uses the full rebuild. Identifiers, bindings, other structural changes, directives, comments, deletions, and unknown nodes therefore never use metadata reuse.
 
 The replacement operator must also belong to the target node's ESTree operator family. For example, `&&` is not accepted for a queued `BinaryExpression`, because reparsing that source produces a `LogicalExpression`. Negative numbers, negative BigInts, `NaN`, and negative zero are likewise excluded because they cannot reparse as one `Literal` node.
