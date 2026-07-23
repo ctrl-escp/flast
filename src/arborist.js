@@ -14,9 +14,7 @@ import {generateCode, generateFlatAST} from './flast.js';
 
 /**
  * @typedef {object} CompactMetadataSnapshot
- * @property {number[][]} ancestries Per-node ancestry IDs.
  * @property {Int32Array} declarations Per-node declaration IDs, or -1.
- * @property {number[][]} lineages Per-node scope lineages.
  * @property {Int32Array} parentIds Per-node parent IDs, or -1.
  * @property {string[]} parentKeys Per-node structural keys.
  * @property {Array<number[]|undefined>} references Per-node reference IDs.
@@ -571,9 +569,7 @@ function captureCompactMetadata(ast) {
   if (!ast[0]?.allScopes) return null;
   const nodeCount = ast.length;
   const snapshot = {
-    ancestries: new Array(nodeCount),
     declarations: new Int32Array(nodeCount).fill(-1),
-    lineages: new Array(nodeCount),
     parentIds: new Int32Array(nodeCount).fill(-1),
     parentKeys: new Array(nodeCount),
     references: new Array(nodeCount),
@@ -641,12 +637,14 @@ function captureCompactMetadata(ast) {
 
   for (let i = 0; i < nodeCount; i++) {
     const node = ast[i];
-    if (!Array.isArray(node.ancestry) || !Array.isArray(node.lineage) || !node.scope) return null;
-    snapshot.ancestries[i] = node.ancestry;
-    snapshot.lineages[i] = node.lineage;
+    if (!node.scope) return null;
+    const scopeIndex = scopeIndexes.get(node.scope);
+    // Every node scope must resolve into the captured graph. Otherwise the
+    // rebuilt lineage could silently point at incomplete scope metadata.
+    if (scopeIndex === undefined) return null;
     snapshot.parentIds[i] = node.parentNode?.nodeId ?? -1;
     snapshot.parentKeys[i] = node.parentKey;
-    snapshot.scopeIndexes[i] = scopeIndexes.get(node.scope) ?? -1;
+    snapshot.scopeIndexes[i] = scopeIndex;
     snapshot.types[i] = node.type;
     if (node.leadingComments?.length || node.trailingComments?.length || node.innerComments?.length) {
       snapshot.hasComments = true;
@@ -655,8 +653,9 @@ function captureCompactMetadata(ast) {
     if (node.declNode) snapshot.declarations[i] = node.declNode.nodeId;
     if (node.references) snapshot.references[i] = node.references.map(reference => reference.nodeId);
   }
-  // The snapshot contains IDs, strings, and number arrays rather than nodes.
-  // This lets the obsolete cyclic AST become collectible before reparsing.
+  // Ancestry and lineage are intentionally omitted: both can be reconstructed
+  // from the new parent/scope links. Retaining their old per-node arrays would
+  // increase peak memory while the replacement AST is being parsed.
   return snapshot;
 }
 
@@ -709,12 +708,19 @@ function applyCompactMetadata(snapshot, ast) {
     }));
   }
   for (let i = 0; i < ast.length; i++) {
-    ast[i].ancestry = [...snapshot.ancestries[i]];
-    ast[i].lineage = [...snapshot.lineages[i]];
-    ast[i].scope = scopes[snapshot.scopeIndexes[i]];
-    if (snapshot.scopeIds[i] !== -1) ast[i].scopeId = snapshot.scopeIds[i];
-    if (snapshot.declarations[i] !== -1) ast[i].declNode = ast[snapshot.declarations[i]];
-    if (snapshot.references[i]) ast[i].references = snapshot.references[i].map(nodeId => ast[nodeId]);
+    const node = ast[i];
+    const parent = node.parentNode;
+    node.scope = scopes[snapshot.scopeIndexes[i]];
+    // Basic parsing already proved the same preorder parent structure. Rebuild
+    // these derived arrays directly instead of retaining them in the snapshot.
+    node.ancestry = parent ? [...parent.ancestry, parent.nodeId] : [];
+    node.lineage = parent ? [...parent.lineage] : [];
+    // A node either inherits its parent's scope or enters one new child scope.
+    // Identity avoids rescanning the lineage array for every restored node.
+    if (!parent || node.scope !== parent.scope) node.lineage.push(node.scope.scopeId);
+    if (snapshot.scopeIds[i] !== -1) node.scopeId = snapshot.scopeIds[i];
+    if (snapshot.declarations[i] !== -1) node.declNode = ast[snapshot.declarations[i]];
+    if (snapshot.references[i]) node.references = snapshot.references[i].map(nodeId => ast[nodeId]);
   }
   ast[0].allScopes = Object.fromEntries(snapshot.allScopeEntries.map(([scopeId, index]) => [scopeId, scopes[index]]));
   return true;

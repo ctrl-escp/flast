@@ -131,7 +131,9 @@ With `compactScopes: true`, a replacement batch is eligible for a metadata-reuse
    - An `UpdateExpression` operator or prefix change with the exact same `argument` node object.
 4. No target is part of a directive prologue, because changing directives can alter strict-mode scope semantics.
 5. Replacement nodes do not introduce new leading or trailing comments.
-6. The metadata snapshot contains scope, ancestry, and lineage information for every node.
+6. Every node's scope resolves into the compact scope graph. Ancestry and lineage
+   are reconstructed from the newly parsed parent and scope links instead of
+   being retained in the snapshot.
 7. After reparsing, node count, node type, `parentKey`, and parent `nodeId` match at every AST-array index.
 
 Operand identity is required so an operator replacement cannot introduce changed identifiers or bindings under an otherwise approved expression type. Failure of any condition uses the full rebuild. Identifiers, bindings, other structural changes, directives, comments, deletions, and unknown nodes therefore never use metadata reuse.

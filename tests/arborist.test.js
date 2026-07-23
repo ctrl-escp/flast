@@ -543,6 +543,31 @@ describe('Arborist edge case tests', () => {
     assert.ok(arb.ast.every((node, index) => node.nodeId === index && arb.ast[node.nodeId] === node));
   });
 
+  it('Reconstructs ancestry and lineage during compact metadata reuse', () => {
+    const code = `
+      const outer = 1;
+      function read(input) {
+        try {
+          if (input) {
+            const local = 2;
+            return () => outer + local;
+          }
+        } catch (error) {
+          return () => error;
+        }
+      }
+    `;
+    const options = {compactScopes: true, retainTokens: false};
+    const arb = new Arborist(code, options);
+    const literal = arb.ast.find(node => node.type === 'Literal' && node.value === 2);
+    arb.replaceNode(literal, {type: 'Literal', value: 3, raw: '3'});
+
+    assert.equal(arb.applyChanges(), 1);
+    const oracle = generateFlatAST(arb.script, options);
+    assert.deepEqual(summarizeDetailedNodes(arb.ast), summarizeDetailedNodes(oracle));
+    assert.deepEqual(summarizeDetailedScopes(arb.ast), summarizeDetailedScopes(oracle));
+  });
+
   it('Fully rebuilds metadata for identifier replacements', () => {
     const arb = new Arborist('let first = 1, second = 2; first;', {compactScopes: true});
     const reference = arb.ast.find(node => node.type === 'Identifier' && node.name === 'first' && node.declNode);
