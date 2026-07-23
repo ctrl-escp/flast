@@ -41,6 +41,12 @@ const scriptParseOptions = {
 
 /**
  * Rebuild a flat AST while preserving an already-known script source type.
+ *
+ * @example
+ * // This must remain a script: reparsing it as a module first would fail
+ * // because modules are strict and do not permit `with`.
+ * rebuildFlatAst('with (target) { read(); }', 'script', options);
+ *
  * @param {string} script Source code to parse.
  * @param {string} sourceType Original program source type.
  * @param {GenerateFlatASTOptions} [options] Flat AST generation options.
@@ -61,6 +67,20 @@ function rebuildFlatAst(script, sourceType, options) {
 
 /**
  * Index targets queued in the same order as one contiguous child-array run.
+ *
+ * @example
+ * const container = [first, second, third, fourth];
+ * indexOrderedAdjacentTargets(
+ *   container,
+ *   new Map([[second, -1], [third, -1]]),
+ * ); // true: indexes 1 and 2 are recorded.
+ *
+ * @example
+ * indexOrderedAdjacentTargets(
+ *   container,
+ *   new Map([[second, -1], [fourth, -1]]),
+ * ); // false: a gap makes the one-pass adjacent optimization unsafe.
+ *
  * @param {Array<ASTNode|null>} container Parent child-node array.
  * @param {Map<ASTNode, number>} indexes Ordered targets mapped to their indexes.
  * @return {boolean} Whether every target was found in one forward-adjacent run.
@@ -221,6 +241,12 @@ const reusableOperators = {
 
 /**
  * Identify the syntax category of an ESTree Literal.
+ *
+ * @example
+ * literalCategory({type: 'Literal', value: 1}); // 'number'
+ * literalCategory({type: 'Literal', value: 1n, bigint: '1'}); // 'bigint'
+ * literalCategory({type: 'Literal', value: /x/, regex: {pattern: 'x', flags: ''}}); // 'regexp'
+ *
  * @param {ASTNode|object} node Literal node.
  * @return {string} Stable literal category used for conservative classification.
  */
@@ -233,6 +259,12 @@ function literalCategory(node) {
 
 /**
  * Check whether code generation preserves a replacement Literal's node shape.
+ *
+ * @example
+ * hasReusableLiteralShape({type: 'Literal', value: 2}, 'number'); // true
+ * hasReusableLiteralShape({type: 'Literal', value: -2}, 'number'); // false
+ * // `-2` reparses as UnaryExpression(Literal(2)), not as one Literal.
+ *
  * @param {ASTNode|object} node Replacement literal.
  * @param {string} category Literal category returned by literalCategory().
  * @return {boolean} Whether reparsing can still produce one Literal node.
@@ -251,6 +283,22 @@ function hasReusableLiteralShape(node, category) {
 
 /**
  * Check whether TemplateElement text cannot change its surrounding AST shape.
+ *
+ * @example
+ * const target = {type: 'TemplateElement', tail: false};
+ * hasReusableTemplateElementShape(target, {
+ *   type: 'TemplateElement',
+ *   tail: false,
+ *   value: {raw: 'Hello ', cooked: 'Hello '},
+ * }); // true
+ *
+ * @example
+ * hasReusableTemplateElementShape(target, {
+ *   type: 'TemplateElement',
+ *   tail: false,
+ *   value: {raw: '${user}', cooked: '${user}'},
+ * }); // false: `${` would introduce a new expression subtree.
+ *
  * @param {ASTNode} targetNode Existing template element.
  * @param {ASTNode|object} replacementNode Replacement template element.
  * @return {boolean} Whether reparsing preserves one element in the same quasi position.
@@ -266,6 +314,22 @@ function hasReusableTemplateElementShape(targetNode, replacementNode) {
 
 /**
  * Check whether a yield replacement changes only delegation syntax.
+ *
+ * @example
+ * const argument = targetNode.argument;
+ * hasReusableYieldShape(targetNode, {
+ *   type: 'YieldExpression',
+ *   argument,
+ *   delegate: true,
+ * }); // true: `yield value` may become `yield* value`.
+ *
+ * @example
+ * hasReusableYieldShape(targetNode, {
+ *   type: 'YieldExpression',
+ *   argument: {...argument},
+ *   delegate: true,
+ * }); // false: a different argument object may contain other mutations.
+ *
  * @param {ASTNode} targetNode Existing yield expression.
  * @param {ASTNode|object} replacementNode Replacement yield expression.
  * @return {boolean} Whether the exact argument subtree remains in place.
@@ -276,7 +340,78 @@ function hasReusableYieldShape(targetNode, replacementNode) {
 }
 
 /**
+ * Check whether a node is structurally enclosed by an async function.
+ *
+ * @example
+ * const asyncFunction = {type: 'FunctionDeclaration', async: true, parentNode: null};
+ * isInsideAsyncFunction({parentNode: asyncFunction}); // true
+ *
+ * @example
+ * const syncFunction = {type: 'FunctionExpression', async: false, parentNode: asyncFunction};
+ * isInsideAsyncFunction({parentNode: syncFunction}); // false
+ * // The nearest function boundary wins; an async outer function is irrelevant.
+ *
+ * @param {ASTNode} node Node whose nearest function ancestor should be checked.
+ * @return {boolean} Whether the nearest function boundary is async.
+ */
+function isInsideAsyncFunction(node) {
+  let parent = node.parentNode;
+  while (parent) {
+    if (parent.type === 'ArrowFunctionExpression' || parent.type === 'FunctionDeclaration' ||
+      parent.type === 'FunctionExpression') return parent.async === true;
+    parent = parent.parentNode;
+  }
+  return false;
+}
+
+/**
+ * Check whether a for-of replacement changes only asynchronous iteration.
+ *
+ * @example
+ * const replacement = {
+ *   type: 'ForOfStatement',
+ *   await: true,
+ *   left: targetNode.left,
+ *   right: targetNode.right,
+ *   body: targetNode.body,
+ * };
+ * hasReusableForOfShape(targetNode, replacement); // true only inside an async function.
+ *
+ * @example
+ * hasReusableForOfShape(targetNode, {
+ *   ...replacement,
+ *   right: {...targetNode.right},
+ * }); // false: changing the iterated expression can invalidate references.
+ *
+ * @param {ASTNode} targetNode Existing for-of statement.
+ * @param {ASTNode|object} replacementNode Replacement for-of statement.
+ * @return {boolean} Whether loop structure and binding metadata remain unchanged.
+ */
+function hasReusableForOfShape(targetNode, replacementNode) {
+  return replacementNode.type === 'ForOfStatement' && typeof replacementNode.await === 'boolean' &&
+    replacementNode.left === targetNode.left && replacementNode.right === targetNode.right &&
+    replacementNode.body === targetNode.body && (!replacementNode.await || isInsideAsyncFunction(targetNode));
+}
+
+/**
  * Verify that an operator replacement retains the exact operand subtrees.
+ *
+ * @example
+ * hasReusableOperatorChildren(targetNode, {
+ *   type: 'BinaryExpression',
+ *   operator: '-',
+ *   left: targetNode.left,
+ *   right: targetNode.right,
+ * }); // true when targetNode is a BinaryExpression.
+ *
+ * @example
+ * hasReusableOperatorChildren(targetNode, {
+ *   type: 'BinaryExpression',
+ *   operator: '&&',
+ *   left: targetNode.left,
+ *   right: targetNode.right,
+ * }); // false: `&&` reparses as a LogicalExpression.
+ *
  * @param {ASTNode} targetNode Existing expression node.
  * @param {ASTNode|object} replacementNode Replacement expression node.
  * @return {boolean} Whether only operator-level fields can affect generated syntax.
@@ -305,6 +440,28 @@ function hasReusableOperatorChildren(targetNode, replacementNode) {
 
 /**
  * Classify one replacement by the metadata work it may invalidate.
+ *
+ * The classifier is intentionally conservative: only `valueOnly` and
+ * `expressionStructural` replacements may reuse compact scope metadata.
+ *
+ * @example
+ * classifyReplacement(
+ *   {type: 'Literal', value: 1, parentNode: {}},
+ *   {type: 'Literal', value: 2},
+ * ); // mutationImpact.valueOnly
+ *
+ * @example
+ * classifyReplacement(
+ *   {type: 'Identifier', name: 'before'},
+ *   {type: 'Identifier', name: 'after'},
+ * ); // mutationImpact.referenceChanging
+ *
+ * @example
+ * classifyReplacement(
+ *   {type: 'Literal', value: 1, parentNode: {}},
+ *   {type: 'Literal', value: -1},
+ * ); // mutationImpact.unknown: the generated AST gains a UnaryExpression.
+ *
  * @param {ASTNode} targetNode Existing AST node.
  * @param {ASTNode|object} replacementNode Queued replacement.
  * @return {number} Mutation-impact level.
@@ -333,6 +490,10 @@ function classifyReplacement(targetNode, replacementNode) {
     return hasReusableYieldShape(targetNode, replacementNode) ?
       mutationImpact.expressionStructural : mutationImpact.unknown;
   }
+  if (targetNode.type === 'ForOfStatement') {
+    return hasReusableForOfShape(targetNode, replacementNode) ?
+      mutationImpact.expressionStructural : mutationImpact.unknown;
+  }
   if (hasReusableOperatorChildren(targetNode, replacementNode)) {
     return mutationImpact.expressionStructural;
   }
@@ -345,6 +506,19 @@ function classifyReplacement(targetNode, replacementNode) {
 
 /**
  * Compute the highest mutation impact in a queued batch.
+ *
+ * @example
+ * classifyMutationBatch([
+ *   [
+ *     {type: 'Literal', value: 1, parentNode: {}},
+ *     {type: 'Literal', value: 2},
+ *   ],
+ * ], []); // mutationImpact.valueOnly
+ *
+ * @example
+ * classifyMutationBatch(replacements, [deletedNodeId]);
+ * // mutationImpact.unknown: any deletion can renumber or restructure nodes.
+ *
  * @param {Array<[ASTNode, ASTNode|object]>} replacements Queued replacements.
  * @param {number[]} deletions Queued deletion node IDs.
  * @return {number} Aggregate mutation-impact level.
@@ -360,6 +534,12 @@ function classifyMutationBatch(replacements, deletions) {
 
 /**
  * Capture compact detailed metadata without retaining references to AST nodes.
+ *
+ * @example
+ * const snapshot = captureCompactMetadata(oldAst);
+ * // A declaration link such as oldAst[8].declNode === oldAst[3] is stored as
+ * // the numeric ID 3, allowing the entire old AST to be garbage-collected.
+ *
  * @param {ASTNode[]} ast Current compact-scope flat AST.
  * @return {CompactMetadataSnapshot|null} ID-based metadata snapshot, or null when metadata cannot be reused.
  */
@@ -453,6 +633,14 @@ function captureCompactMetadata(ast) {
 
 /**
  * Validate structural correspondence and restore captured detailed metadata.
+ *
+ * @example
+ * const snapshot = captureCompactMetadata(oldAst);
+ * const reparsedAst = generateFlatAST(updatedSource, {detailed: false});
+ * applyCompactMetadata(snapshot, reparsedAst);
+ * // true only when every node still has the same index, type, parent key,
+ * // and parent ID; restored links then point exclusively into reparsedAst.
+ *
  * @param {CompactMetadataSnapshot|null} snapshot ID-based metadata snapshot.
  * @param {ASTNode[]} ast Newly parsed basic flat AST.
  * @return {boolean} Whether validation and metadata restoration succeeded.

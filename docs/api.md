@@ -123,6 +123,7 @@ With `compactScopes: true`, a replacement batch is eligible for a metadata-reuse
    - A `Literal` that remains in the same category: string, number, boolean, null, BigInt, or regular expression.
    - A `TemplateElement` that keeps the same `tail` role and changes `value.raw` to plain delimiter-free text.
    - A `YieldExpression` that keeps the exact same `argument` node and changes only `delegate`.
+   - A `ForOfStatement` that keeps the exact same `left`, `right`, and `body` nodes and changes only `await`; enabling `await` additionally requires an enclosing async function.
    - A `BinaryExpression` operator change with the exact same `left` and `right` node objects.
    - A `LogicalExpression` operator change with the exact same `left` and `right` node objects.
    - An `AssignmentExpression` operator change with the exact same `left` and `right` node objects.

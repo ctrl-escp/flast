@@ -682,6 +682,26 @@ describe('Arborist edge case tests', () => {
     assert.deepEqual(summarizeDetailedScopes(arb.ast), summarizeDetailedScopes(oracle));
   });
 
+  it('Reuses compact metadata when enabling asynchronous for-of iteration', () => {
+    const options = {compactScopes: true, retainTokens: false};
+    const code = 'async function read(source) { for (const value of source) use(value); }';
+    const arb = new Arborist(code, options);
+    const target = arb.ast.find(node => node.type === 'ForOfStatement');
+    arb.replaceNode(target, {
+      type: 'ForOfStatement',
+      await: true,
+      left: target.left,
+      right: target.right,
+      body: target.body,
+    });
+
+    assert.equal(arb.applyChanges(), 1);
+    assert.match(arb.script, /for await \(const value of source\)/);
+    const oracle = generateFlatAST(arb.script, options);
+    assert.deepEqual(summarizeDetailedNodes(arb.ast), summarizeDetailedNodes(oracle));
+    assert.deepEqual(summarizeDetailedScopes(arb.ast), summarizeDetailedScopes(oracle));
+  });
+
   it('Preserves comments when metadata reuse requires rich parsing', () => {
     const code = '// file header\nconst value = 1; // retained';
     const options = {compactScopes: true, retainTokens: false};
