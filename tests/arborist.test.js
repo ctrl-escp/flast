@@ -665,6 +665,23 @@ describe('Arborist edge case tests', () => {
     assert.deepEqual(summarizeDetailedScopes(arb.ast), summarizeDetailedScopes(oracle));
   });
 
+  it('Reuses compact metadata for yield delegation changes', () => {
+    const options = {compactScopes: true, retainTokens: false};
+    const arb = new Arborist('const source = [1, 2]; function* values() { yield source; }', options);
+    const target = arb.ast.find(node => node.type === 'YieldExpression');
+    arb.replaceNode(target, {
+      type: 'YieldExpression',
+      argument: target.argument,
+      delegate: true,
+    });
+
+    assert.equal(arb.applyChanges(), 1);
+    assert.match(arb.script, /yield\* source/);
+    const oracle = generateFlatAST(arb.script, options);
+    assert.deepEqual(summarizeDetailedNodes(arb.ast), summarizeDetailedNodes(oracle));
+    assert.deepEqual(summarizeDetailedScopes(arb.ast), summarizeDetailedScopes(oracle));
+  });
+
   it('Preserves comments when metadata reuse requires rich parsing', () => {
     const code = '// file header\nconst value = 1; // retained';
     const options = {compactScopes: true, retainTokens: false};

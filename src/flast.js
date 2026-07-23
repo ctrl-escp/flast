@@ -142,7 +142,9 @@ function indexNode(opts, rootNode, scopes, nodeId, node) {
   const children = [];
   let childrenAreOrdered = true;
   let previousStart = -1;
-  node.parentKey = node.parentKey || '';	// Make sure parentKey exists
+  // Child nodes already receive parentKey while their parent is indexed.
+  // Only the root or a standalone custom node needs the default property.
+  if (node.parentKey === undefined) node.parentKey = '';
   // Iterate over all keys of the node to find child nodes
   const visitorKeys = VisitorKeys[node.type];
   const keys = visitorKeys || Object.keys(node);

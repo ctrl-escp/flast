@@ -355,4 +355,16 @@ describe('Parsing tests', () => {
       assert.ok(n.references?.length || n.declNode, `Identifier '${n.name}' (#${n.nodeId}) is not referenced`);
     });
   });
+  it('Links identifiers whose names match Object prototype properties', () => {
+    const ast = generateFlatAST(`
+      let constructor = 1, toString = 2, __proto__ = 3;
+      constructor; toString; __proto__;
+    `);
+
+    for (const name of ['constructor', 'toString', '__proto__']) {
+      const declaration = ast[0].typeMap.Identifier.find(node => node.name === name && node.parentKey === 'id');
+      assert.equal(declaration.references.length, 1, `Unexpected reference count for ${name}`);
+      assert.equal(declaration.references[0].declNode, declaration, `Reference did not resolve to ${name}`);
+    }
+  });
 });

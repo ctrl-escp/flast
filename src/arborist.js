@@ -265,6 +265,17 @@ function hasReusableTemplateElementShape(targetNode, replacementNode) {
 }
 
 /**
+ * Check whether a yield replacement changes only delegation syntax.
+ * @param {ASTNode} targetNode Existing yield expression.
+ * @param {ASTNode|object} replacementNode Replacement yield expression.
+ * @return {boolean} Whether the exact argument subtree remains in place.
+ */
+function hasReusableYieldShape(targetNode, replacementNode) {
+  return replacementNode.type === 'YieldExpression' && replacementNode.argument === targetNode.argument &&
+    typeof replacementNode.delegate === 'boolean' && (!replacementNode.delegate || Boolean(replacementNode.argument));
+}
+
+/**
  * Verify that an operator replacement retains the exact operand subtrees.
  * @param {ASTNode} targetNode Existing expression node.
  * @param {ASTNode|object} replacementNode Replacement expression node.
@@ -317,6 +328,10 @@ function classifyReplacement(targetNode, replacementNode) {
   if (targetNode.type === 'TemplateElement') {
     return hasReusableTemplateElementShape(targetNode, replacementNode) ?
       mutationImpact.valueOnly : mutationImpact.unknown;
+  }
+  if (targetNode.type === 'YieldExpression') {
+    return hasReusableYieldShape(targetNode, replacementNode) ?
+      mutationImpact.expressionStructural : mutationImpact.unknown;
   }
   if (hasReusableOperatorChildren(targetNode, replacementNode)) {
     return mutationImpact.expressionStructural;
