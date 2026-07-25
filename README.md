@@ -375,6 +375,7 @@ See the dedicated guide: [docs/structure-detection.md](docs/structure-detection.
 - `retainTokens: false` releases parser tokens after comment attachment to reduce retained memory.
 - `compactScopes: true` releases undocumented `eslint-scope` internals after projecting the documented scope and identifier relationships.
 - The next breaking release is expected to make `retainTokens: false` the default; set `retainTokens: true` explicitly if your integration reads `ast[0].tokens`.
+- Preview the planned defaults with `{nextMajorDefaults: true}` or `FLAST_NEXT_MAJOR_DEFAULTS=1`. Explicit options override the preview, and `{nextMajorDefaults: false}` disables the environment flag for one operation.
 - `Arborist.applyChanges()` validates by regenerating and reparsing code before committing the updated script.
 - Replacing the root node behaves differently from replacing a non-root node; it swaps the entire output program.
 - Comments are preserved where possible during replacements and deletions, but you should still test transforms that move or remove large sections of code.

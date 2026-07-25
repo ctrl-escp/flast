@@ -2,7 +2,7 @@ import path from 'node:path';
 import assert from 'node:assert';
 import {describe, it} from 'node:test';
 import {fileURLToPath} from 'node:url';
-import {generateFlatAST, generateCode} from '../src/index.js';
+import {generateFlatAST, generateCode, generateRootNode} from '../src/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -96,6 +96,18 @@ describe('Functionality tests', () => {
     assert.equal(compactAst[0].tokens, undefined, 'Tokens should be released when retainTokens is false.');
     assert.match(generateCode(compactAst[0]), /keep this comment/);
   });
+  it('Can preview token-retention defaults per call', () => {
+    const futureAst = generateFlatAST('const value = 1;', {nextMajorDefaults: true});
+    const overriddenAst = generateFlatAST('const value = 1;', {
+      nextMajorDefaults: true,
+      retainTokens: true,
+    });
+    const futureRoot = generateRootNode('const value = 1;', {nextMajorDefaults: true});
+
+    assert.equal(futureAst[0].tokens, undefined);
+    assert.ok(overriddenAst[0].tokens.length);
+    assert.equal(futureRoot.tokens, undefined);
+  });
   it('Avoids lexer arrays for comment-free token-free parsing', () => {
     const ast = generateFlatAST('const value = 1;', {retainTokens: false});
 
@@ -158,8 +170,7 @@ describe('Functionality tests', () => {
     }
     assert.deepStrictEqual(result, expectedResult);
   });
-  it('Verify generateRootNode returns null for invalid code', async () => {
-    const {generateRootNode} = await import(path.resolve(`${__dirname}/../src/index.js`));
+  it('Verify generateRootNode returns null for invalid code', () => {
     const result = generateRootNode('return a;', {alternateSourceTypeOnFailure: false});
     assert.equal(result, null);
   });

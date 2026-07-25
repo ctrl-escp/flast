@@ -1,4 +1,5 @@
 import {logger} from './utils/logger.js';
+import {shouldUseNextMajorDefaults} from './utils/nextMajorDefaults.js';
 import {generateCode, generateFlatAST} from './flast.js';
 
 /** @import {ASTNode, GenerateFlatASTOptions} from './types.d.ts' */
@@ -867,6 +868,9 @@ export class Arborist {
    * @param {GenerateFlatASTOptions} [options] Flat AST generation options used for construction and rebuilds.
 	 */
   constructor(scriptOrFlatAstArr, options = {}) {
+    if (shouldUseNextMajorDefaults(options.nextMajorDefaults) && options.retainTokens === undefined) {
+      options = {...options, retainTokens: false};
+    }
     this.script                = '';
     this.ast                   = [];
     this.markedForDeletion     = [];  // Array of node ids.

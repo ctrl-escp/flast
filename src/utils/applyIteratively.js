@@ -1,11 +1,13 @@
 import {Arborist} from '../arborist.js';
 import {logger} from './logger.js';
+import {shouldUseNextMajorDefaults} from './nextMajorDefaults.js';
 
 /**
  * @typedef {object} ApplyIterativelyOptions
  * @property {number} [maxIterations=500] Maximum complete passes.
  * @property {'batch'|'sequential'} [mode='sequential'] Rebuild strategy.
  * @property {import('../types.d.ts').GenerateFlatASTOptions} [arboristOptions] Initial Arborist options.
+ * @property {boolean} [nextMajorDefaults] Test the planned breaking defaults.
  */
 
 const defaultMaxIterations = 500;
@@ -52,7 +54,8 @@ function normalizeApplyOptions(value) {
     throw new TypeError('applyIteratively options must be a number or an options object.');
   }
   const maxIterations = options.maxIterations ?? defaultMaxIterations;
-  const mode = options.mode ?? 'sequential';
+  const useNextMajorDefaults = shouldUseNextMajorDefaults(options.nextMajorDefaults);
+  const mode = options.mode ?? (useNextMajorDefaults ? 'batch' : 'sequential');
   if (!Number.isSafeInteger(maxIterations) || maxIterations < 0) {
     throw new RangeError('maxIterations must be a non-negative safe integer.');
   }
@@ -64,7 +67,13 @@ function normalizeApplyOptions(value) {
       Array.isArray(options.arboristOptions))) {
     throw new TypeError('arboristOptions must be an object.');
   }
-  return {maxIterations, mode, arboristOptions: options.arboristOptions || {}};
+  const arboristDefaults = useNextMajorDefaults ? {compactScopes: true, retainTokens: false} :
+    options.nextMajorDefaults === false ? {nextMajorDefaults: false} : null;
+  return {
+    maxIterations,
+    mode,
+    arboristOptions: {...arboristDefaults, ...options.arboristOptions},
+  };
 }
 
 /**

@@ -26,6 +26,8 @@ export interface GenerateFlatASTOptions {
   alternateSourceTypeOnFailure?: boolean;
   /** Espree options; these override flAST's parser defaults. */
   parseOpts?: ParseCodeOptions;
+  /** Test planned breaking defaults for this operation. */
+  nextMajorDefaults?: boolean;
 }
 
 /** Rebuild strategy used by {@link applyIteratively}. */
@@ -48,6 +50,8 @@ export interface ApplyIterativelyOptions {
   mode?: ApplyIterativelyMode;
   /** Options used to construct the initial Arborist. */
   arboristOptions?: GenerateFlatASTOptions;
+  /** Test planned breaking defaults without changing current global defaults. */
+  nextMajorDefaults?: boolean;
 }
 
 /** Escodegen options accepted by {@link generateCode}. */

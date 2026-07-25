@@ -1,6 +1,7 @@
 import {parse, VisitorKeys} from 'espree';
 import {analyze} from 'eslint-scope';
 import {logger} from './utils/logger.js';
+import {shouldUseNextMajorDefaults} from './utils/nextMajorDefaults.js';
 import {generate, attachComments} from 'escodegen';
 
 /** @import {ASTAllScopes, ASTNode, ASTRootNode, ASTTypeMap, GenerateCodeOptions, GenerateFlatASTOptions, ParseCodeOptions, ScopeVariableMapByScopeId} from './types.d.ts' */
@@ -83,6 +84,25 @@ const generateFlatASTDefaultOptions = {
 };
 
 /**
+ * Merge current defaults, the optional future preset, and explicit overrides.
+ *
+ * Explicit options are applied last so the preview never prevents callers
+ * from retaining tokens or selecting another supported behavior.
+ *
+ * @example
+ * resolveGenerateFlatASTOptions({nextMajorDefaults: true}).retainTokens; // false
+ * resolveGenerateFlatASTOptions({nextMajorDefaults: true, retainTokens: true}).retainTokens; // true
+ *
+ * @param {GenerateFlatASTOptions} [opts] Caller-provided options.
+ * @return {GenerateFlatASTOptions} Fully resolved options.
+ */
+function resolveGenerateFlatASTOptions(opts = {}) {
+  const futureDefaults = shouldUseNextMajorDefaults(opts.nextMajorDefaults) ?
+    {retainTokens: false} : null;
+  return {...generateFlatASTDefaultOptions, ...futureDefaults, ...opts};
+}
+
+/**
  * Parse source into a preorder flat AST.
  *
  * Every returned node obeys `ast[node.nodeId] === node`, so callers can store
@@ -108,7 +128,7 @@ const generateFlatASTDefaultOptions = {
  * @return {ASTNode[]} Flat AST, or an empty array when parsing fails.
  */
 function generateFlatAST(inputCode, opts = {}) {
-  opts = {...generateFlatASTDefaultOptions, ...opts};
+  opts = resolveGenerateFlatASTOptions(opts);
   let tree = [];
   const rootNode = generateRootNode(inputCode, opts);
   if (rootNode) {
@@ -168,7 +188,7 @@ function generateCode(rootNode, opts = {}) {
  * @return {ASTRootNode|null} Parsed root, or null when no configured parse succeeds.
  */
 function generateRootNode(inputCode, opts = {}) {
-  opts = {...generateFlatASTDefaultOptions, ...opts};
+  opts = resolveGenerateFlatASTOptions(opts);
   let parseOpts = opts.parseOpts || {};
   if (!opts.retainTokens && !mayContainComments(inputCode)) {
     // Comment attachment is the only reason a token stream is needed here.

@@ -119,6 +119,59 @@ describe('Utils tests: applyIteratively', () => {
     assert.equal(applyIteratively(code, [replaceOne, replaceTwo], {mode: 'batch', maxIterations: 1}),
       'const value = 2;');
   });
+  it('Can preview and override iterative next-major defaults', () => {
+    const code = 'const value = 1;';
+    const observedOptions = [];
+    const replaceOne = function replaceOne(arb) {
+      observedOptions.push({...arb.options});
+      const target = arb.ast.find(node => node.type === 'Literal' && node.value === 1);
+      if (target) arb.replaceNode(target, {type: 'Literal', value: 2, raw: '2'});
+      return arb;
+    };
+    const replaceTwo = function replaceTwo(arb) {
+      const target = arb.ast.find(node => node.type === 'Literal' && node.value === 2);
+      if (target) arb.replaceNode(target, {type: 'Literal', value: 3, raw: '3'});
+      return arb;
+    };
+
+    assert.equal(applyIteratively(code, [replaceOne, replaceTwo], {
+      nextMajorDefaults: true,
+      maxIterations: 1,
+    }), 'const value = 2;');
+    assert.deepEqual(observedOptions[0], {compactScopes: true, retainTokens: false});
+
+    assert.equal(applyIteratively(code, [replaceOne, replaceTwo], {
+      nextMajorDefaults: true,
+      mode: 'sequential',
+      maxIterations: 1,
+      arboristOptions: {compactScopes: false, retainTokens: true},
+    }), 'const value = 3;');
+    assert.deepEqual(observedOptions[1], {compactScopes: false, retainTokens: true});
+  });
+  it('Can preview next-major defaults through the environment', () => {
+    const originalValue = process.env.FLAST_NEXT_MAJOR_DEFAULTS;
+    let observedOptions;
+    const inspectOptions = function inspectOptions(arb) {
+      observedOptions = arb.options;
+      return arb;
+    };
+
+    try {
+      process.env.FLAST_NEXT_MAJOR_DEFAULTS = '1';
+      applyIteratively('const value = 1;', [inspectOptions], 1);
+      assert.deepEqual(observedOptions, {compactScopes: true, retainTokens: false});
+
+      observedOptions = null;
+      applyIteratively('const value = 1;', [inspectOptions], {
+        nextMajorDefaults: false,
+        maxIterations: 1,
+      });
+      assert.deepEqual(observedOptions, {nextMajorDefaults: false});
+    } finally {
+      if (originalValue === undefined) delete process.env.FLAST_NEXT_MAJOR_DEFAULTS;
+      else process.env.FLAST_NEXT_MAJOR_DEFAULTS = originalValue;
+    }
+  });
   it('Continues a batch after an ordinary modifier exception', () => {
     const code = 'const values = [1, 2];';
     const throwingModifier = function throwingModifier(arb) {

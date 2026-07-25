@@ -82,6 +82,22 @@ The main flAST entry point. Returns an ordered flat array of enriched nodes.
 #### `parseOpts?: ParseCodeOptions`
 - Forwarded to Espree
 
+#### `nextMajorDefaults?: boolean`
+- Enables planned breaking defaults for one operation
+- Currently makes `retainTokens` default to `false`
+- Does not implicitly enable compact scopes for direct `generateFlatAST()` or Arborist calls
+- Explicit `retainTokens` and `compactScopes` values still win
+- An explicit `false` disables `FLAST_NEXT_MAJOR_DEFAULTS` for that call
+
+The same preview can be enabled process-wide in Node.js:
+
+```sh
+FLAST_NEXT_MAJOR_DEFAULTS=1 node transform.mjs
+```
+
+Browser builds can use only the programmatic flag and do not require a Node.js
+`process` shim.
+
 ### Example
 ```js
 const ast = generateFlatAST(code, {
@@ -251,6 +267,16 @@ const result = applyIteratively(script, [transform], {
     retainTokens: false,
   },
 });
+```
+
+To preview all planned iterative defaults without spelling them individually:
+
+```js
+const result = applyIteratively(script, modifiers, {
+  nextMajorDefaults: true,
+});
+// Equivalent defaults: mode: 'batch', compactScopes: true,
+// retainTokens: false. Explicit mode/arboristOptions still override them.
 ```
 
 The numeric third argument remains supported as shorthand for

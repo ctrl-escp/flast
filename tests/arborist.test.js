@@ -820,6 +820,15 @@ describe('Arborist edge case tests', () => {
     assert.ok(arb.ast[0].tokens.length > 0);
   });
 
+  it('Can preview token-free Arborist defaults without changing compact-scope policy', () => {
+    const arb = new Arborist('const value = 1;', {nextMajorDefaults: true});
+
+    assert.equal(arb.options.retainTokens, false);
+    assert.equal(arb.options.compactScopes, undefined);
+    assert.equal(arb.ast[0].tokens, undefined);
+    assert.ok('set' in arb.ast[0].allScopes[0] || 'through' in arb.ast[0].allScopes[0]);
+  });
+
   it('Preserves script mode during lean metadata reuse', () => {
     const arb = new Arborist('with (target) { value = 1; }', {
       compactScopes: true,
