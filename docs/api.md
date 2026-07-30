@@ -85,9 +85,18 @@ The main flAST entry point. Returns an ordered flat array of enriched nodes.
 #### `nextMajorDefaults?: boolean`
 - Enables planned breaking defaults for one operation
 - Currently makes `retainTokens` default to `false`
-- Does not implicitly enable compact scopes for direct `generateFlatAST()` or Arborist calls
+- Also makes `compactScopes` default to `true` for flat ASTs and Arborist instances
 - Explicit `retainTokens` and `compactScopes` values still win
 - An explicit `false` disables `FLAST_NEXT_MAJOR_DEFAULTS` for that call
+- Applies to `generateFlatAST()`, `generateRootNode()`,
+  `extractNodesFromRoot()`, `new Arborist()`, and `applyIteratively()`
+- Does not alter `parseCode()`, which is a low-level Espree wrapper whose
+  parser options are always explicit
+
+`generateRootNode()` applies the token-retention default, but scope compaction
+only becomes relevant when `extractNodesFromRoot()` builds the flat AST.
+When `new Arborist(existingAst)` receives an already-built AST, the supplied
+tree is preserved as-is; the previewed options apply to later rebuilds.
 
 The same preview can be enabled process-wide in Node.js:
 

@@ -90,15 +90,23 @@ const generateFlatASTDefaultOptions = {
  * from retaining tokens or selecting another supported behavior.
  *
  * @example
- * resolveGenerateFlatASTOptions({nextMajorDefaults: true}).retainTokens; // false
- * resolveGenerateFlatASTOptions({nextMajorDefaults: true, retainTokens: true}).retainTokens; // true
+ * const future = resolveGenerateFlatASTOptions({nextMajorDefaults: true});
+ * future.retainTokens; // false
+ * future.compactScopes; // true
+ *
+ * @example
+ * resolveGenerateFlatASTOptions({
+ *   nextMajorDefaults: true,
+ *   retainTokens: true,
+ *   compactScopes: false,
+ * }); // Explicit values override the preset.
  *
  * @param {GenerateFlatASTOptions} [opts] Caller-provided options.
  * @return {GenerateFlatASTOptions} Fully resolved options.
  */
 function resolveGenerateFlatASTOptions(opts = {}) {
   const futureDefaults = shouldUseNextMajorDefaults(opts.nextMajorDefaults) ?
-    {retainTokens: false} : null;
+    {compactScopes: true, retainTokens: false} : null;
   return {...generateFlatASTDefaultOptions, ...futureDefaults, ...opts};
 }
 
@@ -414,7 +422,10 @@ function compactScopeGraph(scopes) {
  * @return {ASTNode[]} Decorated nodes in preorder traversal order.
  */
 function extractNodesFromRoot(rootNode, opts, phaseTimings) {
-  opts = {...generateFlatASTDefaultOptions, ...opts};
+  opts = resolveGenerateFlatASTOptions(opts);
+  // parseCode callers may supply an already tokenized root. Token retention is
+  // still an extraction option, so release that stream before returning it.
+  if (!opts.retainTokens) delete rootNode.tokens;
   const typeMap = {typeList: []};
   const allNodes = [];
   let startedAt = phaseTimings ? performance.now() : 0;

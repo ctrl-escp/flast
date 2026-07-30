@@ -820,13 +820,41 @@ describe('Arborist edge case tests', () => {
     assert.ok(arb.ast[0].tokens.length > 0);
   });
 
-  it('Can preview token-free Arborist defaults without changing compact-scope policy', () => {
+  it('Can preview and override the next-major Arborist defaults', () => {
     const arb = new Arborist('const value = 1;', {nextMajorDefaults: true});
+    const overridden = new Arborist('const value = 1;', {
+      nextMajorDefaults: true,
+      compactScopes: false,
+      retainTokens: true,
+    });
 
     assert.equal(arb.options.retainTokens, false);
-    assert.equal(arb.options.compactScopes, undefined);
+    assert.equal(arb.options.compactScopes, true);
     assert.equal(arb.ast[0].tokens, undefined);
-    assert.ok('set' in arb.ast[0].allScopes[0] || 'through' in arb.ast[0].allScopes[0]);
+    assert.ok(Object.values(arb.ast[0].allScopes).every(scope => !('set' in scope) && !('through' in scope)));
+    assert.equal(overridden.options.retainTokens, true);
+    assert.equal(overridden.options.compactScopes, false);
+    assert.ok(overridden.ast[0].tokens.length);
+    assert.ok('set' in overridden.ast[0].allScopes[0] || 'through' in overridden.ast[0].allScopes[0]);
+  });
+
+  it('Applies and can explicitly disable environment-preview Arborist defaults', () => {
+    const originalValue = process.env.FLAST_NEXT_MAJOR_DEFAULTS;
+    try {
+      process.env.FLAST_NEXT_MAJOR_DEFAULTS = '1';
+      const future = new Arborist('const value = 1;');
+      const current = new Arborist('const value = 1;', {nextMajorDefaults: false});
+
+      assert.equal(future.options.retainTokens, false);
+      assert.equal(future.options.compactScopes, true);
+      assert.equal(future.ast[0].tokens, undefined);
+      assert.equal(current.options.retainTokens, undefined);
+      assert.equal(current.options.compactScopes, undefined);
+      assert.ok(current.ast[0].tokens.length);
+    } finally {
+      if (originalValue === undefined) delete process.env.FLAST_NEXT_MAJOR_DEFAULTS;
+      else process.env.FLAST_NEXT_MAJOR_DEFAULTS = originalValue;
+    }
   });
 
   it('Preserves script mode during lean metadata reuse', () => {

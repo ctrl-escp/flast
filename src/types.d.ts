@@ -26,7 +26,7 @@ export interface GenerateFlatASTOptions {
   alternateSourceTypeOnFailure?: boolean;
   /** Espree options; these override flAST's parser defaults. */
   parseOpts?: ParseCodeOptions;
-  /** Test planned breaking defaults for this operation. */
+  /** Preview compact scopes and token-free ASTs for this operation. */
   nextMajorDefaults?: boolean;
 }
 

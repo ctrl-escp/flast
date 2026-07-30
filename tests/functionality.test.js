@@ -2,7 +2,7 @@ import path from 'node:path';
 import assert from 'node:assert';
 import {describe, it} from 'node:test';
 import {fileURLToPath} from 'node:url';
-import {generateFlatAST, generateCode, generateRootNode} from '../src/index.js';
+import {extractNodesFromRoot, generateFlatAST, generateCode, generateRootNode, parseCode} from '../src/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -100,13 +100,39 @@ describe('Functionality tests', () => {
     const futureAst = generateFlatAST('const value = 1;', {nextMajorDefaults: true});
     const overriddenAst = generateFlatAST('const value = 1;', {
       nextMajorDefaults: true,
+      compactScopes: false,
       retainTokens: true,
     });
     const futureRoot = generateRootNode('const value = 1;', {nextMajorDefaults: true});
+    const extractedAst = extractNodesFromRoot(parseCode('const value = 1;', {
+      sourceType: 'module',
+      comment: true,
+      tokens: true,
+    }), {nextMajorDefaults: true, includeSrc: false});
 
     assert.equal(futureAst[0].tokens, undefined);
+    assert.ok(Object.values(futureAst[0].allScopes).every(scope => !('set' in scope) && !('through' in scope)));
     assert.ok(overriddenAst[0].tokens.length);
+    assert.ok('set' in overriddenAst[0].allScopes[0] || 'through' in overriddenAst[0].allScopes[0]);
     assert.equal(futureRoot.tokens, undefined);
+    assert.equal(extractedAst[0].tokens, undefined);
+    assert.ok(Object.values(extractedAst[0].allScopes).every(scope => !('set' in scope) && !('through' in scope)));
+  });
+  it('Applies and can explicitly disable environment-preview defaults', () => {
+    const originalValue = process.env.FLAST_NEXT_MAJOR_DEFAULTS;
+    try {
+      process.env.FLAST_NEXT_MAJOR_DEFAULTS = 'true';
+      const futureAst = generateFlatAST('const value = 1;');
+      const currentAst = generateFlatAST('const value = 1;', {nextMajorDefaults: false});
+
+      assert.equal(futureAst[0].tokens, undefined);
+      assert.ok(Object.values(futureAst[0].allScopes).every(scope => !('set' in scope) && !('through' in scope)));
+      assert.ok(currentAst[0].tokens.length);
+      assert.ok('set' in currentAst[0].allScopes[0] || 'through' in currentAst[0].allScopes[0]);
+    } finally {
+      if (originalValue === undefined) delete process.env.FLAST_NEXT_MAJOR_DEFAULTS;
+      else process.env.FLAST_NEXT_MAJOR_DEFAULTS = originalValue;
+    }
   });
   it('Avoids lexer arrays for comment-free token-free parsing', () => {
     const ast = generateFlatAST('const value = 1;', {retainTokens: false});

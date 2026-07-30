@@ -863,13 +863,14 @@ export class Arborist {
    * @example
    * const fromSource = new Arborist('let value = 1;', {compactScopes: true});
    * const fromAst = new Arborist(fromSource.ast);
+   * // Existing AST input is preserved; options govern later rebuilds.
    *
    * @param {string|ASTNode[]} scriptOrFlatAstArr The target script or a flat AST array.
    * @param {GenerateFlatASTOptions} [options] Flat AST generation options used for construction and rebuilds.
-	 */
+   */
   constructor(scriptOrFlatAstArr, options = {}) {
-    if (shouldUseNextMajorDefaults(options.nextMajorDefaults) && options.retainTokens === undefined) {
-      options = {...options, retainTokens: false};
+    if (shouldUseNextMajorDefaults(options.nextMajorDefaults)) {
+      options = {compactScopes: true, retainTokens: false, ...options};
     }
     this.script                = '';
     this.ast                   = [];
