@@ -33,9 +33,15 @@ if (!filename) {
 const code = fs.readFileSync(filename, 'utf8');
 let script = code;
 
+// Replace this predicate with the code structure relevant to your project.
+// This default matches a concrete string so the starter remains runnable.
+function codeStructureMatch(node) {
+  return node.type === 'Literal' && node.value === 'value to replace';
+}
+
 function matchAndTransform(arb) {
   for (const n of arb.ast) {
-    if (/* describe a code structure */) {
+    if (codeStructureMatch(n)) {
       const replacementNode = {
         type: 'Literal',
         value: 'replacement value',

@@ -2,6 +2,49 @@ import assert from 'node:assert';
 import {describe, it} from 'node:test';
 import {Arborist, generateFlatAST} from '../src/index.js';
 
+/**
+ * Reduce detailed node metadata to stable IDs for rebuild comparisons.
+ * @param {import('../src/types.d.ts').ASTNode[]} ast Flat AST.
+ * @return {object[]} Serializable node summaries.
+ */
+function summarizeDetailedNodes(ast) {
+  return ast.map(node => ({
+    type: node.type,
+    nodeId: node.nodeId,
+    parentId: node.parentNode?.nodeId,
+    parentKey: node.parentKey,
+    scopeId: node.scope?.scopeId,
+    ancestry: node.ancestry,
+    lineage: node.lineage,
+    declarationId: node.declNode?.nodeId,
+    referenceIds: node.references?.map(reference => reference.nodeId),
+  }));
+}
+
+/**
+ * Reduce compact scope relationships to stable IDs for rebuild comparisons.
+ * @param {import('../src/types.d.ts').ASTNode[]} ast Flat AST.
+ * @return {object[]} Serializable scope summaries.
+ */
+function summarizeDetailedScopes(ast) {
+  return Object.values(ast[0].allScopes).map(scope => ({
+    scopeId: scope.scopeId,
+    type: scope.type,
+    blockId: scope.block.nodeId,
+    upperId: scope.upper?.scopeId,
+    childIds: scope.childScopes.map(child => child.scopeId),
+    variableScopeId: scope.variableScope?.scopeId,
+    variables: scope.variables.map(variable => [
+      variable.name,
+      variable.identifiers.map(identifier => identifier.nodeId),
+    ]),
+    references: scope.references.map(reference => [
+      reference.identifier.nodeId,
+      reference.resolved?.identifiers?.map(identifier => identifier.nodeId),
+    ]),
+  }));
+}
+
 describe('Arborist tests', () => {
   it('Verify node replacement works as expected', () => {
     const code = 'console.log(\'Hello\' + \' \' + \'there!\');';
@@ -74,6 +117,14 @@ describe('Arborist tests', () => {
     arborist.applyChanges();
     assert.equal(arborist.script, expectedResult, 'An incorrect node was targeted for deletion.');
   });
+  it('Verify deleting the root is ignored', () => {
+    const arborist = new Arborist('a;');
+
+    assert.doesNotThrow(() => arborist.deleteNode(arborist.ast[0]));
+    assert.equal(arborist.getNumberOfChanges(), 0, 'A root deletion was queued');
+    assert.equal(arborist.applyChanges(), 0);
+    assert.equal(arborist.script, 'a;');
+  });
   it('Verify a valid script can be used to initialize an arborist instance', () => {
     const code = 'console.log(\'test\');';
     let error = '';
@@ -103,6 +154,12 @@ describe('Arborist tests', () => {
     assert.equal(error, '', `Arborist instantiated with an error: ${error}`);
     assert.deepEqual(arborist.ast, ast, 'Arborist ast array did not match initialization argument.');
   });
+  it('Verify an empty AST can apply no changes', () => {
+    const arborist = new Arborist([]);
+
+    assert.equal(arborist.applyChanges(), 0);
+    assert.deepEqual(arborist.ast, []);
+  });
   it('Verify invalid changes are not applied', () => {
     const code = 'console.log(\'test\');';
     const arborist = new Arborist(code);
@@ -110,6 +167,33 @@ describe('Arborist tests', () => {
     arborist.markNode(arborist.ast.find(n => n.name === 'log'), {type: 'EmptyStatement'});
     arborist.applyChanges();
     assert.equal(arborist.script, code, 'Invalid changes were applied.');
+  });
+  it('Verify the AST is restored after invalid changes', () => {
+    const code = 'console.log(\'test\');';
+    const arborist = new Arborist(code);
+    arborist.markNode(arborist.ast.find(n => n.type === 'Literal'), {type: 'EmptyStatement'});
+    arborist.markNode(arborist.ast.find(n => n.name === 'log'), {type: 'EmptyStatement'});
+
+    assert.equal(arborist.applyChanges(), 0, 'Invalid changes should not be reported as applied');
+    assert.equal(arborist.script, code, 'The script changed after invalid changes');
+    assert.equal(arborist.ast.find(n => n.type === 'MemberExpression').property.name, 'log',
+      'The AST retained an invalid property replacement');
+    assert.equal(arborist.ast.find(n => n.type === 'CallExpression').arguments[0].value, 'test',
+      'The AST retained an invalid argument replacement');
+
+    arborist.replaceNode(arborist.ast.find(n => n.type === 'Literal'), {type: 'Literal', value: 'ok'});
+    assert.equal(arborist.applyChanges(), 1, 'The restored AST could not accept a later valid change');
+    assert.equal(arborist.script, 'console.log(\'ok\');');
+  });
+  it('Restores the AST when a root replacement generates invalid source', () => {
+    const code = 'const value = 1;';
+    const arborist = new Arborist(code);
+    arborist.replaceNode(arborist.ast[0], {type: 'Identifier', name: 'not valid'});
+
+    assert.equal(arborist.applyChanges(), 0);
+    assert.equal(arborist.script, code);
+    assert.equal(arborist.ast[0].type, 'Program');
+    assert.equal(arborist.ast.find(node => node.type === 'Identifier').name, 'value');
   });
   it('Verify comments aren\'t duplicated when replacing the root node', () => {
     const code = '//comment1\nconst a = 1, b = 2;';
@@ -238,6 +322,22 @@ describe('Arborist edge case tests', () => {
     assert.equal(arb.script, expected);
   });
 
+  it('Does not treat a replaced declarator as a deleted declarator', () => {
+    const arb = new Arborist('let a = 1, b = 2;');
+    const aDecl = arb.ast.find(n => n.type === 'VariableDeclarator' && n.id.name === 'a');
+    const bDecl = arb.ast.find(n => n.type === 'VariableDeclarator' && n.id.name === 'b');
+
+    arb.replaceNode(aDecl, {
+      type: 'VariableDeclarator',
+      id: {type: 'Identifier', name: 'a'},
+      init: {type: 'Literal', value: 10, raw: '10'},
+    });
+    arb.deleteNode(bDecl);
+
+    assert.equal(arb.applyChanges(), 2);
+    assert.equal(arb.script, 'let a = 10;');
+  });
+
   it('Deeply nested node replacement', () => {
     const code = 'if (a) { if (b) { c(); } }';
     const expected = `if (a) {
@@ -288,6 +388,17 @@ describe('Arborist edge case tests', () => {
     assert.equal(arb.script, 'let a = 1, b = 20;', 'A failed replacement prevented later valid replacements');
   });
 
+  it('A detached array child is not counted as replaced', () => {
+    const arb = new Arborist('call(1, 2);');
+    const call = arb.ast.find(n => n.type === 'CallExpression');
+    const target = call.arguments[0];
+    call.arguments.shift();
+    arb.replaceNode(target, {type: 'Literal', value: 10});
+
+    assert.equal(arb.applyChanges(), 0, 'A detached node was counted as replaced');
+    assert.equal(call.arguments[-1], undefined, 'The replacement was written to an invalid array property');
+  });
+
   it('applyChanges returns 0 when an outer failure occurs', () => {
     const arb = new Arborist('const a = 1;');
     const originalScript = arb.script;
@@ -330,5 +441,504 @@ describe('Arborist edge case tests', () => {
     for (const lit of literals) {arb.markNode(lit);}
     assert.ok(arrayNode.isMarked);
     for (const lit of literals) {assert.ok(!lit.isMarked);}
+  });
+
+  it('Batches sibling deletions without losing comments', () => {
+    const code = Array.from({length: 200}, (_, i) => `// comment-${i}\ncall(${i});`).join('\n');
+    const arb = new Arborist(code);
+    const deletedStatements = arb.ast[0].body.slice(0, 160);
+    for (const statement of deletedStatements) arb.deleteNode(statement);
+
+    assert.equal(arb.applyChanges(), 160);
+    assert.equal(arb.ast[0].body.length, 40);
+    assert.equal(arb.ast[0].body[0].expression.arguments[0].value, 160);
+    for (let i = 0; i < 160; i++) assert.ok(arb.script.includes(`// comment-${i}`));
+  });
+
+  it('Compacts medium ordered runs of adjacent sibling deletions once', () => {
+    const code = Array.from({length: 48}, (_, i) => `call(${i});`).join('\n');
+    const arb = new Arborist(code);
+    const deletedStatements = arb.ast[0].body.slice(16, 48);
+    for (const statement of deletedStatements) arb.deleteNode(statement);
+
+    assert.equal(arb.applyChanges(), 32);
+    assert.equal(arb.ast[0].body.length, 16);
+    assert.equal(arb.ast[0].body[15].expression.arguments[0].value, 15);
+  });
+
+  it('Batches sibling replacements without losing comments', () => {
+    const code = Array.from({length: 200}, (_, i) => `// comment-${i}\ncall(${i});`).join('\n');
+    const arb = new Arborist(code);
+    const replacedStatements = arb.ast[0].body.slice(0, 160);
+    for (const statement of replacedStatements) arb.replaceNode(statement, {type: 'EmptyStatement'});
+
+    assert.equal(arb.applyChanges(), 160);
+    assert.equal(arb.ast[0].body.length, 200);
+    assert.ok(arb.ast[0].body.slice(0, 160).every(node => node.type === 'EmptyStatement'));
+    for (let i = 0; i < 160; i++) assert.ok(arb.script.includes(`// comment-${i}`));
+  });
+
+  it('Indexes medium ordered runs of adjacent sibling replacements', () => {
+    const code = Array.from({length: 48}, (_, i) => `call(${i});`).join('\n');
+    const arb = new Arborist(code);
+    const replacedStatements = arb.ast[0].body.slice(16, 48);
+    for (const statement of replacedStatements) arb.replaceNode(statement, {type: 'EmptyStatement'});
+
+    assert.equal(arb.applyChanges(), 32);
+    assert.equal(arb.ast[0].body.length, 48);
+    assert.ok(arb.ast[0].body.slice(0, 16).every(node => node.type === 'ExpressionStatement'));
+    assert.ok(arb.ast[0].body.slice(16).every(node => node.type === 'EmptyStatement'));
+  });
+
+  it('Preserves sparse array holes during batched deletions', () => {
+    const values = Array.from({length: 160}, (_, i) => i === 140 ? '' : i).join(',');
+    const arb = new Arborist(`[${values}];`);
+    const deletedElements = arb.ast.find(node => node.type === 'ArrayExpression').elements
+      .filter(Boolean)
+      .slice(0, 128);
+    for (const element of deletedElements) arb.deleteNode(element);
+
+    assert.equal(arb.applyChanges(), 128);
+    const elements = arb.ast.find(node => node.type === 'ArrayExpression').elements;
+    assert.equal(elements.length, 32);
+    assert.equal(elements.filter(Boolean).length, 31);
+  });
+
+  it('Preserves script source type after applying changes', () => {
+    const arb = new Arborist('with (target) { value = 1; }');
+    const literal = arb.ast.find(node => node.type === 'Literal');
+    arb.replaceNode(literal, {type: 'Literal', value: 2, raw: '2'});
+
+    assert.equal(arb.applyChanges(), 1);
+    assert.equal(arb.ast[0].sourceType, 'script');
+    assert.match(arb.script, /value = 2/);
+  });
+
+  it('Preserves flat AST generation options across rebuilds', () => {
+    const arb = new Arborist('// keep this comment\nconst value = 1;', {
+      compactScopes: true,
+      retainTokens: false,
+    });
+    const literal = arb.ast.find(node => node.type === 'Literal');
+    assert.equal(arb.ast[0].tokens, undefined);
+    arb.replaceNode(literal, {type: 'Literal', value: 2, raw: '2'});
+
+    assert.equal(arb.applyChanges(), 1);
+    assert.equal(arb.ast[0].tokens, undefined);
+    assert.ok(Object.values(arb.ast[0].allScopes).every(scope => !('set' in scope) && !('through' in scope)));
+    assert.match(arb.script, /keep this comment/);
+  });
+
+  it('Reuses compact metadata for safe literal replacements', () => {
+    const code = 'const outer = 1; function read(value) { const local = 2; return outer + value + local; }';
+    const options = {compactScopes: true, retainTokens: false};
+    const arb = new Arborist(code, options);
+    const literal = arb.ast.find(node => node.type === 'Literal' && node.value === 2);
+    arb.replaceNode(literal, {type: 'Literal', value: 3, raw: '3'});
+
+    assert.equal(arb.applyChanges(), 1);
+    const oracle = generateFlatAST(arb.script, options);
+    assert.deepEqual(summarizeDetailedNodes(arb.ast), summarizeDetailedNodes(oracle));
+    assert.deepEqual(summarizeDetailedScopes(arb.ast), summarizeDetailedScopes(oracle));
+    assert.ok(arb.ast.every((node, index) => node.nodeId === index && arb.ast[node.nodeId] === node));
+  });
+
+  it('Reconstructs ancestry and lineage during compact metadata reuse', () => {
+    const code = `
+      const outer = 1;
+      function read(input) {
+        try {
+          if (input) {
+            const local = 2;
+            return () => outer + local;
+          }
+        } catch (error) {
+          return () => error;
+        }
+      }
+    `;
+    const options = {compactScopes: true, retainTokens: false};
+    const arb = new Arborist(code, options);
+    const literal = arb.ast.find(node => node.type === 'Literal' && node.value === 2);
+    arb.replaceNode(literal, {type: 'Literal', value: 3, raw: '3'});
+
+    assert.equal(arb.applyChanges(), 1);
+    const oracle = generateFlatAST(arb.script, options);
+    assert.deepEqual(summarizeDetailedNodes(arb.ast), summarizeDetailedNodes(oracle));
+    assert.deepEqual(summarizeDetailedScopes(arb.ast), summarizeDetailedScopes(oracle));
+  });
+
+  it('Reconstructs declaration reference arrays from saved declaration links', () => {
+    const code = `
+      var repeated;
+      var repeated;
+      const unused = 1;
+      function read() {
+        return repeated;
+      }
+    `;
+    const options = {compactScopes: true, retainTokens: false};
+    const arb = new Arborist(code, options);
+    const literal = arb.ast.find(node => node.type === 'Literal');
+    arb.replaceNode(literal, {type: 'Literal', value: 2, raw: '2'});
+
+    assert.equal(arb.applyChanges(), 1);
+    const oracle = generateFlatAST(arb.script, options);
+    assert.deepEqual(summarizeDetailedNodes(arb.ast), summarizeDetailedNodes(oracle));
+    assert.deepEqual(summarizeDetailedScopes(arb.ast), summarizeDetailedScopes(oracle));
+    const unused = arb.ast.find(node => node.type === 'Identifier' && node.name === 'unused');
+    assert.deepEqual(unused.references, []);
+  });
+
+  it('Preserves declaration links in identifier-dense metadata snapshots', () => {
+    const references = Array.from({length: 100}, () => 'value').join(', ');
+    const code = `const value = 1; consume(${references});`;
+    const options = {compactScopes: true, retainTokens: false};
+    const arb = new Arborist(code, options);
+    const literal = arb.ast.find(node => node.type === 'Literal');
+    arb.replaceNode(literal, {type: 'Literal', value: 2, raw: '2'});
+
+    assert.equal(arb.applyChanges(), 1);
+    const oracle = generateFlatAST(arb.script, options);
+    assert.deepEqual(summarizeDetailedNodes(arb.ast), summarizeDetailedNodes(oracle));
+    assert.deepEqual(summarizeDetailedScopes(arb.ast), summarizeDetailedScopes(oracle));
+  });
+
+  it('Reconstructs scope IDs from compact scope records', () => {
+    const code = `
+      const value = 1;
+      function outer() {
+        {
+          const nested = value;
+          return () => nested;
+        }
+      }
+    `;
+    const options = {compactScopes: true, retainTokens: false};
+    const arb = new Arborist(code, options);
+    const literal = arb.ast.find(node => node.type === 'Literal');
+    arb.replaceNode(literal, {type: 'Literal', value: 2, raw: '2'});
+
+    assert.equal(arb.applyChanges(), 1);
+    const oracle = generateFlatAST(arb.script, options);
+    for (const scope of Object.values(oracle[0].allScopes)) {
+      assert.equal(arb.ast[scope.block.nodeId].scopeId, scope.scopeId);
+    }
+  });
+
+  it('Fully rebuilds metadata for identifier replacements', () => {
+    const arb = new Arborist('let first = 1, second = 2; first;', {compactScopes: true});
+    const reference = arb.ast.find(node => node.type === 'Identifier' && node.name === 'first' && node.declNode);
+    arb.replaceNode(reference, {type: 'Identifier', name: 'second'});
+
+    assert.equal(arb.applyChanges(), 1);
+    const updatedReference = arb.ast.find(node => node.type === 'Identifier' && node.name === 'second' && node.declNode);
+    assert.equal(updatedReference.declNode.name, 'second');
+    assert.equal(updatedReference.parentNode.type, 'ExpressionStatement');
+  });
+
+  it('Reuses compact metadata for operator-only replacements', () => {
+    const code = 'let left = 1, right = 2, count = 0; left + right; left && right; left += right; !left; count++;';
+    const options = {compactScopes: true, retainTokens: false};
+    const arb = new Arborist(code, options);
+    const replacements = {
+      BinaryExpression: '-',
+      LogicalExpression: '||',
+      AssignmentExpression: '-=',
+      UnaryExpression: '~',
+      UpdateExpression: '--',
+    };
+    for (const [type, operator] of Object.entries(replacements)) {
+      const target = arb.ast.find(node => node.type === type);
+      const replacement = {type, operator};
+      if (type === 'UnaryExpression' || type === 'UpdateExpression') {
+        replacement.argument = target.argument;
+        replacement.prefix = target.prefix;
+      } else {
+        replacement.left = target.left;
+        replacement.right = target.right;
+      }
+      arb.replaceNode(target, replacement);
+    }
+
+    assert.equal(arb.applyChanges(), 5);
+    const oracle = generateFlatAST(arb.script, options);
+    assert.deepEqual(summarizeDetailedNodes(arb.ast), summarizeDetailedNodes(oracle));
+    assert.deepEqual(summarizeDetailedScopes(arb.ast), summarizeDetailedScopes(oracle));
+    assert.ok(arb.ast.every((node, index) => node.nodeId === index && arb.ast[node.nodeId] === node));
+  });
+
+  it('Fully rebuilds when an operator changes the reparsed expression type', () => {
+    const options = {compactScopes: true, retainTokens: false};
+    const arb = new Arborist('const value = left + right;', options);
+    const target = arb.ast.find(node => node.type === 'BinaryExpression');
+    arb.replaceNode(target, {
+      type: 'BinaryExpression',
+      operator: '&&',
+      left: target.left,
+      right: target.right,
+    });
+
+    assert.equal(arb.applyChanges(), 1);
+    assert.equal(arb.ast.find(node => node.type === 'LogicalExpression').operator, '&&');
+    const oracle = generateFlatAST(arb.script, options);
+    assert.deepEqual(summarizeDetailedNodes(arb.ast), summarizeDetailedNodes(oracle));
+  });
+
+  it('Restores invalid compound assignment to a destructuring target', () => {
+    const code = 'let target, source = {target: 1}; ({target} = source);';
+    const options = {compactScopes: true, retainTokens: false};
+    const arb = new Arborist(code, options);
+    const assignment = arb.ast.find(node => node.type === 'AssignmentExpression');
+    arb.replaceNode(assignment, {
+      type: 'AssignmentExpression',
+      operator: '+=',
+      left: assignment.left,
+      right: assignment.right,
+    });
+
+    assert.equal(arb.applyChanges(), 0);
+    assert.equal(arb.script, code);
+    assert.equal(arb.ast.find(node => node.type === 'AssignmentExpression').operator, '=');
+  });
+
+  it('Fully rebuilds when a BigInt literal becomes a unary expression', () => {
+    const options = {compactScopes: true, retainTokens: false};
+    const arb = new Arborist('const value = 1n;', options);
+    const target = arb.ast.find(node => node.type === 'Literal');
+    arb.replaceNode(target, {type: 'Literal', value: -2n, bigint: '-2', raw: '-2n'});
+
+    assert.equal(arb.applyChanges(), 1);
+    assert.equal(arb.ast.find(node => node.type === 'UnaryExpression').operator, '-');
+    const oracle = generateFlatAST(arb.script, options);
+    assert.deepEqual(summarizeDetailedNodes(arb.ast), summarizeDetailedNodes(oracle));
+  });
+
+  it('Reuses compact metadata for delimiter-free template text', () => {
+    const options = {compactScopes: true, retainTokens: false};
+    const arb = new Arborist('const name = "Ada"; const message = `Hello ${name}!`;', options);
+    const target = arb.ast.find(node => node.type === 'TemplateElement' && !node.tail);
+    arb.replaceNode(target, {
+      type: 'TemplateElement',
+      tail: target.tail,
+      value: {raw: 'Welcome ', cooked: 'Welcome '},
+    });
+
+    assert.equal(arb.applyChanges(), 1);
+    assert.match(arb.script, /`Welcome \$\{ name \}!`/);
+    const oracle = generateFlatAST(arb.script, options);
+    assert.deepEqual(summarizeDetailedNodes(arb.ast), summarizeDetailedNodes(oracle));
+    assert.deepEqual(summarizeDetailedScopes(arb.ast), summarizeDetailedScopes(oracle));
+  });
+
+  it('Fully rebuilds template text that introduces an interpolation', () => {
+    const options = {compactScopes: true, retainTokens: false};
+    const arb = new Arborist('const first = 1, second = 2; `${first}`;', options);
+    const target = arb.ast.find(node => node.type === 'TemplateElement' && !node.tail);
+    arb.replaceNode(target, {
+      type: 'TemplateElement',
+      tail: target.tail,
+      value: {raw: '${second}', cooked: '${second}'},
+    });
+
+    assert.equal(arb.applyChanges(), 1);
+    const oracle = generateFlatAST(arb.script, options);
+    assert.equal(arb.ast[0].typeMap.TemplateElement.length, 3);
+    assert.deepEqual(summarizeDetailedNodes(arb.ast), summarizeDetailedNodes(oracle));
+    assert.deepEqual(summarizeDetailedScopes(arb.ast), summarizeDetailedScopes(oracle));
+  });
+
+  it('Reuses compact metadata for yield delegation changes', () => {
+    const options = {compactScopes: true, retainTokens: false};
+    const arb = new Arborist('const source = [1, 2]; function* values() { yield source; }', options);
+    const target = arb.ast.find(node => node.type === 'YieldExpression');
+    arb.replaceNode(target, {
+      type: 'YieldExpression',
+      argument: target.argument,
+      delegate: true,
+    });
+
+    assert.equal(arb.applyChanges(), 1);
+    assert.match(arb.script, /yield\* source/);
+    const oracle = generateFlatAST(arb.script, options);
+    assert.deepEqual(summarizeDetailedNodes(arb.ast), summarizeDetailedNodes(oracle));
+    assert.deepEqual(summarizeDetailedScopes(arb.ast), summarizeDetailedScopes(oracle));
+  });
+
+  it('Reuses compact metadata when enabling asynchronous for-of iteration', () => {
+    const options = {compactScopes: true, retainTokens: false};
+    const code = 'async function read(source) { for (const value of source) use(value); }';
+    const arb = new Arborist(code, options);
+    const target = arb.ast.find(node => node.type === 'ForOfStatement');
+    arb.replaceNode(target, {
+      type: 'ForOfStatement',
+      await: true,
+      left: target.left,
+      right: target.right,
+      body: target.body,
+    });
+
+    assert.equal(arb.applyChanges(), 1);
+    assert.match(arb.script, /for await \(const value of source\)/);
+    const oracle = generateFlatAST(arb.script, options);
+    assert.deepEqual(summarizeDetailedNodes(arb.ast), summarizeDetailedNodes(oracle));
+    assert.deepEqual(summarizeDetailedScopes(arb.ast), summarizeDetailedScopes(oracle));
+  });
+
+  it('Preserves comments when metadata reuse requires rich parsing', () => {
+    const code = '// file header\nconst value = 1; // retained';
+    const options = {compactScopes: true, retainTokens: false};
+    const arb = new Arborist(code, options);
+    const literal = arb.ast.find(node => node.type === 'Literal');
+    arb.replaceNode(literal, {type: 'Literal', value: 2, raw: '2'});
+
+    assert.equal(arb.applyChanges(), 1);
+    assert.match(arb.script, /file header/);
+    assert.match(arb.script, /retained/);
+    assert.equal(arb.ast[0].tokens, undefined);
+  });
+
+  it('Detects attached comments when the parser comment list is unavailable', () => {
+    const code = '// file header\nconst value = 1;';
+    const options = {compactScopes: true, retainTokens: false};
+    const ast = generateFlatAST(code, options);
+    delete ast[0].comments;
+    const arb = new Arborist(ast, options);
+    const literal = arb.ast.find(node => node.type === 'Literal');
+    arb.replaceNode(literal, {type: 'Literal', value: 2, raw: '2'});
+
+    assert.equal(arb.applyChanges(), 1);
+    assert.match(arb.script, /file header/);
+  });
+
+  it('Retains tokens when metadata reuse is configured to keep them', () => {
+    const arb = new Arborist('const value = 1;', {compactScopes: true});
+    const literal = arb.ast.find(node => node.type === 'Literal');
+    arb.replaceNode(literal, {type: 'Literal', value: 2, raw: '2'});
+
+    assert.equal(arb.applyChanges(), 1);
+    assert.ok(arb.ast[0].tokens.length > 0);
+  });
+
+  it('Can preview and override the next-major Arborist defaults', () => {
+    const arb = new Arborist('const value = 1;', {nextMajorDefaults: true});
+    const overridden = new Arborist('const value = 1;', {
+      nextMajorDefaults: true,
+      compactScopes: false,
+      retainTokens: true,
+    });
+
+    assert.equal(arb.options.retainTokens, false);
+    assert.equal(arb.options.compactScopes, true);
+    assert.equal(arb.ast[0].tokens, undefined);
+    assert.ok(Object.values(arb.ast[0].allScopes).every(scope => !('set' in scope) && !('through' in scope)));
+    assert.equal(overridden.options.retainTokens, true);
+    assert.equal(overridden.options.compactScopes, false);
+    assert.ok(overridden.ast[0].tokens.length);
+    assert.ok('set' in overridden.ast[0].allScopes[0] || 'through' in overridden.ast[0].allScopes[0]);
+  });
+
+  it('Applies and can explicitly disable environment-preview Arborist defaults', () => {
+    const originalValue = process.env.FLAST_NEXT_MAJOR_DEFAULTS;
+    try {
+      process.env.FLAST_NEXT_MAJOR_DEFAULTS = '1';
+      const future = new Arborist('const value = 1;');
+      const current = new Arborist('const value = 1;', {nextMajorDefaults: false});
+
+      assert.equal(future.options.retainTokens, false);
+      assert.equal(future.options.compactScopes, true);
+      assert.equal(future.ast[0].tokens, undefined);
+      assert.equal(current.options.retainTokens, undefined);
+      assert.equal(current.options.compactScopes, undefined);
+      assert.ok(current.ast[0].tokens.length);
+    } finally {
+      if (originalValue === undefined) delete process.env.FLAST_NEXT_MAJOR_DEFAULTS;
+      else process.env.FLAST_NEXT_MAJOR_DEFAULTS = originalValue;
+    }
+  });
+
+  it('Preserves script mode during lean metadata reuse', () => {
+    const arb = new Arborist('with (target) { value = 1; }', {
+      compactScopes: true,
+      retainTokens: false,
+    });
+    const literal = arb.ast.find(node => node.type === 'Literal');
+    arb.replaceNode(literal, {type: 'Literal', value: 2, raw: '2'});
+
+    assert.equal(arb.applyChanges(), 1);
+    assert.equal(arb.ast[0].sourceType, 'script');
+    assert.equal(arb.ast[0].tokens, undefined);
+    assert.match(arb.script, /value = 2/);
+  });
+
+  it('Falls back to a full rebuild when typeMap is stale', () => {
+    const options = {compactScopes: true, retainTokens: false};
+    const arb = new Arborist('const value = 1; consume(value);', options);
+    const literal = arb.ast.find(node => node.type === 'Literal');
+    arb.ast[0].typeMap.Identifier.pop();
+    arb.replaceNode(literal, {type: 'Literal', value: 2, raw: '2'});
+
+    assert.equal(arb.applyChanges(), 1);
+    assert.equal(arb.script, 'const value = 2;\nconsume(value);');
+    assert.ok(arb.ast.every((node, index) => node.nodeId === index && arb.ast[node.nodeId] === node));
+    assert.deepEqual(summarizeDetailedNodes(arb.ast), summarizeDetailedNodes(generateFlatAST(arb.script, options)));
+  });
+
+  it('Finalizes compact scopes atomically and preserves configured metadata', () => {
+    const code = '// header\nwith (target) { const value = 1; use(value); }';
+    const arb = new Arborist(code, {compactScopes: true, retainTokens: false});
+    const compactAst = arb.ast;
+
+    assert.equal(arb.finalizeScopes(), arb);
+    assert.notEqual(arb.ast, compactAst);
+    assert.equal(arb.ast[0].sourceType, 'script');
+    assert.equal(arb.ast[0].tokens, undefined);
+    assert.equal(arb.options.compactScopes, false);
+    assert.equal(arb.options.detailed, true);
+    assert.ok(arb.ast[0].body[0].leadingComments.length);
+    assert.ok('set' in arb.ast[0].allScopes[0] || 'through' in arb.ast[0].allScopes[0]);
+    assert.ok(arb.ast.every((node, index) => node.nodeId === index && arb.ast[node.nodeId] === node));
+  });
+
+  it('Leaves an already full detailed AST unchanged during finalization', () => {
+    const arb = new Arborist('const value = 1;');
+    const originalAst = arb.ast;
+
+    assert.equal(arb.finalizeScopes(), arb);
+    assert.equal(arb.ast, originalAst);
+  });
+
+  it('Rejects finalization while mutations are pending', () => {
+    const arb = new Arborist('const value = 1;', {compactScopes: true});
+    const literal = arb.ast.find(node => node.type === 'Literal');
+    arb.replaceNode(literal, {type: 'Literal', value: 2, raw: '2'});
+
+    assert.throws(() => arb.finalizeScopes(), /mutations are pending/);
+    assert.equal(arb.ast.find(node => node.type === 'Literal').value, 1);
+    assert.equal(arb.getNumberOfChanges(), 1);
+  });
+
+  it('Keeps compact state untouched when finalization fails', () => {
+    const options = {compactScopes: true, retainTokens: false};
+    const arb = new Arborist('const value = 1;', options);
+    const compactAst = arb.ast;
+    const compactOptions = arb.options;
+    arb.script = 'const {';
+
+    assert.throws(() => arb.finalizeScopes(), /Unable to finalize scopes/);
+    assert.equal(arb.ast, compactAst);
+    assert.equal(arb.options, compactOptions);
+    assert.equal(arb.options.compactScopes, true);
+  });
+
+  it('Keeps later mutations in full-scope mode after finalization', () => {
+    const arb = new Arborist('const value = 1;', {compactScopes: true, retainTokens: true});
+    arb.finalizeScopes();
+    const literal = arb.ast.find(node => node.type === 'Literal');
+    arb.replaceNode(literal, {type: 'Literal', value: 2, raw: '2'});
+
+    assert.equal(arb.applyChanges(), 1);
+    assert.ok(arb.ast[0].tokens.length);
+    assert.ok('set' in arb.ast[0].allScopes[0] || 'through' in arb.ast[0].allScopes[0]);
   });
 });

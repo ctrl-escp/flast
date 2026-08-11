@@ -13,6 +13,34 @@ if (!filename) {
 const code = fs.readFileSync(filename, 'utf8');
 let script = code;
 
+/**
+ * Decide which nodes this starter transform should replace.
+ *
+ * Replace this predicate with the structure relevant to your project. This
+ * concrete default makes the example runnable and replaces string literals
+ * whose value is exactly "value to replace".
+ *
+ * @example
+ * codeStructureMatch({type: 'Literal', value: 'value to replace'}); // true
+ * codeStructureMatch({type: 'Identifier', name: 'value to replace'}); // false
+ *
+ * @param {import('../src/types.d.ts').ASTNode} node Candidate AST node.
+ * @return {boolean} Whether the starter replacement should be queued.
+ */
+function codeStructureMatch(node) {
+  return node.type === 'Literal' && node.value === 'value to replace';
+}
+
+/**
+ * Queue replacements for every node accepted by codeStructureMatch().
+ *
+ * @example
+ * // Input containing "value to replace" becomes "replacement value".
+ * applyIteratively(source, [matchAndTransform]);
+ *
+ * @param {import('../src/types.d.ts').Arborist} arb Current mutation queue.
+ * @return {import('../src/types.d.ts').Arborist} The same queue for applyIteratively.
+ */
 function matchAndTransform(arb) {
   // Scan the whole flat AST and queue replacements or deletions for matches.
   for (const n of arb.ast) {

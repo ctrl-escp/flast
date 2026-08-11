@@ -1,6 +1,6 @@
 import assert from 'node:assert';
 import {describe, it} from 'node:test';
-import {applyIteratively, logger} from '../src/index.js';
+import {applyIteratively, Arborist, logger} from '../src/index.js';
 describe('Utils tests: applyIteratively', () => {
   it('Verify applyIteratively cannot remove the root node without replacing it', () => {
     const code = 'a';
@@ -67,7 +67,7 @@ describe('Utils tests: applyIteratively', () => {
 
     assert.equal(result, 'const greeting = \'General\';', 'Later modifiers did not run after an earlier modifier threw');
   });
-  it('Verify applyIteratively detects a replaced Arborist via scriptHash', () => {
+  it('Verify applyIteratively detects a replaced Arborist by identity', () => {
     const code = 'const greeting = \'Hello\';';
     const replaceWithNewArborist = function replaceWithNewArborist(arb) {
       const nextArb = new arb.constructor(arb.script);
@@ -83,6 +83,188 @@ describe('Utils tests: applyIteratively', () => {
     const result = applyIteratively(code, [replaceWithNewArborist], 2);
 
     assert.equal(result, 'const greeting = \'General\';', 'Replaced Arborist instance was not applied');
+  });
+  it('Batches independent modifiers into one rebuild per iteration', () => {
+    const code = 'const values = [1, 2, 3];';
+    let observedArborist;
+    const modifiers = [1, 2, 3].map(value => function replaceValue(arb) {
+      observedArborist = arb;
+      const target = arb.ast.find(node => node.type === 'Literal' && node.value === value);
+      if (target) arb.replaceNode(target, {type: 'Literal', value: value * 10, raw: String(value * 10)});
+      return arb;
+    });
+
+    const result = applyIteratively(code, modifiers, {
+      mode: 'batch',
+      arboristOptions: {compactScopes: true, retainTokens: false},
+    });
+
+    assert.equal(result, 'const values = [\n  10,\n  20,\n  30\n];');
+    assert.equal(observedArborist.appliedCounter, 1, 'Batch mode rebuilt more than once');
+  });
+  it('Keeps sequential same-pass visibility for dependent modifiers', () => {
+    const code = 'const value = 1;';
+    const replaceOne = function replaceOne(arb) {
+      const target = arb.ast.find(node => node.type === 'Literal' && node.value === 1);
+      if (target) arb.replaceNode(target, {type: 'Literal', value: 2, raw: '2'});
+      return arb;
+    };
+    const replaceTwo = function replaceTwo(arb) {
+      const target = arb.ast.find(node => node.type === 'Literal' && node.value === 2);
+      if (target) arb.replaceNode(target, {type: 'Literal', value: 3, raw: '3'});
+      return arb;
+    };
+
+    assert.equal(applyIteratively(code, [replaceOne, replaceTwo], 1), 'const value = 3;');
+    assert.equal(applyIteratively(code, [replaceOne, replaceTwo], {mode: 'batch', maxIterations: 1}),
+      'const value = 2;');
+  });
+  it('Can preview and override iterative next-major defaults', () => {
+    const code = 'const value = 1;';
+    const observedOptions = [];
+    const replaceOne = function replaceOne(arb) {
+      observedOptions.push({...arb.options});
+      const target = arb.ast.find(node => node.type === 'Literal' && node.value === 1);
+      if (target) arb.replaceNode(target, {type: 'Literal', value: 2, raw: '2'});
+      return arb;
+    };
+    const replaceTwo = function replaceTwo(arb) {
+      const target = arb.ast.find(node => node.type === 'Literal' && node.value === 2);
+      if (target) arb.replaceNode(target, {type: 'Literal', value: 3, raw: '3'});
+      return arb;
+    };
+
+    assert.equal(applyIteratively(code, [replaceOne, replaceTwo], {
+      nextMajorDefaults: true,
+      maxIterations: 1,
+    }), 'const value = 2;');
+    assert.deepEqual(observedOptions[0], {compactScopes: true, retainTokens: false});
+
+    assert.equal(applyIteratively(code, [replaceOne, replaceTwo], {
+      nextMajorDefaults: true,
+      mode: 'sequential',
+      maxIterations: 1,
+      arboristOptions: {compactScopes: false, retainTokens: true},
+    }), 'const value = 3;');
+    assert.deepEqual(observedOptions[1], {compactScopes: false, retainTokens: true});
+  });
+  it('Can preview next-major defaults through the environment', () => {
+    const originalValue = process.env.FLAST_NEXT_MAJOR_DEFAULTS;
+    let observedOptions;
+    const inspectOptions = function inspectOptions(arb) {
+      observedOptions = arb.options;
+      return arb;
+    };
+
+    try {
+      process.env.FLAST_NEXT_MAJOR_DEFAULTS = '1';
+      applyIteratively('const value = 1;', [inspectOptions], 1);
+      assert.deepEqual(observedOptions, {compactScopes: true, retainTokens: false});
+
+      observedOptions = null;
+      applyIteratively('const value = 1;', [inspectOptions], {
+        nextMajorDefaults: false,
+        maxIterations: 1,
+      });
+      assert.deepEqual(observedOptions, {nextMajorDefaults: false});
+    } finally {
+      if (originalValue === undefined) delete process.env.FLAST_NEXT_MAJOR_DEFAULTS;
+      else process.env.FLAST_NEXT_MAJOR_DEFAULTS = originalValue;
+    }
+  });
+  it('Continues a batch after an ordinary modifier exception', () => {
+    const code = 'const values = [1, 2];';
+    const throwingModifier = function throwingModifier(arb) {
+      const target = arb.ast.find(node => node.type === 'Literal' && node.value === 1);
+      arb.replaceNode(target, {type: 'Literal', value: 10, raw: '10'});
+      throw new Error('cleanup failed');
+    };
+    const laterModifier = function laterModifier(arb) {
+      const target = arb.ast.find(node => node.type === 'Literal' && node.value === 2);
+      arb.replaceNode(target, {type: 'Literal', value: 20, raw: '20'});
+      return arb;
+    };
+
+    assert.equal(applyIteratively(code, [throwingModifier, laterModifier], {mode: 'batch', maxIterations: 1}),
+      'const values = [\n  10,\n  20\n];');
+  });
+  it('Preserves markNode overlap rules across batched modifiers', () => {
+    const createReplacement = value => function replaceLiteral(arb) {
+      const target = arb.ast.find(node => node.type === 'Literal');
+      arb.replaceNode(target, {type: 'Literal', value, raw: String(value)});
+      return arb;
+    };
+
+    assert.equal(applyIteratively('const value = 1;', [createReplacement(2), createReplacement(3)], {
+      mode: 'batch',
+      maxIterations: 1,
+    }), 'const value = 2;');
+  });
+  it('Rejects a replacement Arborist that would discard a pending batch', () => {
+    const code = 'const value = 1;';
+    const queueChange = function queueChange(arb) {
+      const target = arb.ast.find(node => node.type === 'Literal');
+      arb.replaceNode(target, {type: 'Literal', value: 2, raw: '2'});
+      return arb;
+    };
+    const replaceArborist = function replaceArborist(arb) {
+      return new Arborist(arb.script);
+    };
+
+    assert.throws(
+      () => applyIteratively(code, [queueChange, replaceArborist], {mode: 'batch'}),
+      /Use mode: 'sequential'/,
+    );
+  });
+  it('Accepts a replacement Arborist before a batch has pending changes', () => {
+    const code = 'const value = 1;';
+    const replaceArborist = function replaceArborist() {
+      const arb = new Arborist('const value = 2;', {compactScopes: true, retainTokens: false});
+      const target = arb.ast.find(node => node.type === 'Literal');
+      arb.replaceNode(target, {type: 'Literal', value: 3, raw: '3'});
+      return arb;
+    };
+
+    assert.equal(applyIteratively(code, [replaceArborist], {mode: 'batch', maxIterations: 1}),
+      'const value = 3;');
+  });
+  it('Stops batch iteration after invalid output leaves source unchanged', () => {
+    let calls = 0;
+    const invalidModifier = function invalidModifier(arb) {
+      calls++;
+      const target = arb.ast.find(node => node.type === 'Literal');
+      arb.replaceNode(target, {type: 'DefinitelyInvalid'});
+      return arb;
+    };
+
+    assert.equal(applyIteratively('const value = 1;', [invalidModifier], {mode: 'batch'}), 'const value = 1;');
+    assert.equal(calls, 1);
+  });
+  it('Validates iterative options and honors a zero iteration limit', () => {
+    let calls = 0;
+    const modifier = function modifier(arb) {
+      calls++;
+      return arb;
+    };
+
+    assert.equal(applyIteratively('value;', [modifier], {maxIterations: 0}), 'value;');
+    assert.equal(calls, 0);
+    assert.throws(() => applyIteratively('value;', [modifier], {mode: 'parallel'}), /Unknown applyIteratively mode/);
+    assert.throws(() => applyIteratively('value;', [modifier], -1), /non-negative safe integer/);
+  });
+  it('Stops self-reproducing batches at the iteration limit', () => {
+    let calls = 0;
+    const increment = function increment(arb) {
+      calls++;
+      const target = arb.ast.find(node => node.type === 'Literal');
+      const value = target.value + 1;
+      arb.replaceNode(target, {type: 'Literal', value, raw: String(value)});
+      return arb;
+    };
+
+    assert.equal(applyIteratively('let value = 0;', [increment], {mode: 'batch', maxIterations: 3}),
+      'let value = 3;');
+    assert.equal(calls, 3);
   });
 });
 describe('Utils tests: logger', () => {

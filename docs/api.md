@@ -6,7 +6,7 @@ This guide focuses on flAST's current public API surface and the behaviors that 
 - [Exports](#exports)
 - [`generateFlatAST(inputCode, opts?)`](#generateflatastinputcode-opts)
 - [`Arborist`](#arborist)
-- [`applyIteratively(script, funcs, maxIterations?)`](#applyiterativelyscript-funcs-maxiterations)
+- [`applyIteratively(script, funcs, options?)`](#applyiterativelyscript-funcs-options)
 - [`logger`](#logger)
 - [`generateCode(rootNode, opts?)`](#generatecoderootnode-opts)
 - [`generateRootNode(inputCode, opts?)`](#generaterootnodeinputcode-opts)
@@ -33,6 +33,7 @@ The main flAST entry point. Returns an ordered flat array of enriched nodes.
 ### Returns
 - `ASTNode[]`
 - `[]` for invalid input
+- Each node's `nodeId` equals its array index, so `ast[node.nodeId] === node`.
 
 ### Commonly Used Node Properties
 - `nodeId`
@@ -60,6 +61,20 @@ The main flAST entry point. Returns an ordered flat array of enriched nodes.
 - Default: `true`
 - When `false`, nodes do not store original source slices in `src`
 
+#### `retainTokens?: boolean`
+- Default: `true`
+- When `false`, parser tokens are released after comments are attached
+- Sources with no possible comment marker skip token and comment allocation entirely when this is `false`
+- Detection includes line/block comments, hashbangs, and legacy HTML comments; ambiguous markers inside strings conservatively keep the rich parse path
+- Reduces retained AST memory while preserving attached comments; use the default if callers read `ast[0].tokens`
+- Planned breaking-version default: `false`; callers that need `ast[0].tokens` should set `retainTokens: true` explicitly
+
+#### `compactScopes?: boolean`
+- Default: `false`
+- When `true`, replaces the internal `eslint-scope` graph with the documented scope, variable, and reference fields after identifier linking
+- Preserves `scopeId`, `type`, `block`, `upper`, `childScopes`, `variableScope`, variable identifiers, and resolved-reference links
+- Omits undocumented `eslint-scope` internals such as `set` and `through`; leave this disabled if an integration reads those fields
+
 #### `alternateSourceTypeOnFailure?: boolean`
 - Default: `true`
 - Retries parse with `sourceType: 'script'` after a compatible module parse failure
@@ -67,11 +82,38 @@ The main flAST entry point. Returns an ordered flat array of enriched nodes.
 #### `parseOpts?: ParseCodeOptions`
 - Forwarded to Espree
 
+#### `nextMajorDefaults?: boolean`
+- Enables planned breaking defaults for one operation
+- Currently makes `retainTokens` default to `false`
+- Also makes `compactScopes` default to `true` for flat ASTs and Arborist instances
+- Explicit `retainTokens` and `compactScopes` values still win
+- An explicit `false` disables `FLAST_NEXT_MAJOR_DEFAULTS` for that call
+- Applies to `generateFlatAST()`, `generateRootNode()`,
+  `extractNodesFromRoot()`, `new Arborist()`, and `applyIteratively()`
+- Does not alter `parseCode()`, which is a low-level Espree wrapper whose
+  parser options are always explicit
+
+`generateRootNode()` applies the token-retention default, but scope compaction
+only becomes relevant when `extractNodesFromRoot()` builds the flat AST.
+When `new Arborist(existingAst)` receives an already-built AST, the supplied
+tree is preserved as-is; the previewed options apply to later rebuilds.
+
+The same preview can be enabled process-wide in Node.js:
+
+```sh
+FLAST_NEXT_MAJOR_DEFAULTS=1 node transform.mjs
+```
+
+Browser builds can use only the programmatic flag and do not require a Node.js
+`process` shim.
+
 ### Example
 ```js
 const ast = generateFlatAST(code, {
   detailed: true,
+  compactScopes: true,
   includeSrc: true,
+  retainTokens: false,
   alternateSourceTypeOnFailure: true,
 });
 ``` 
@@ -82,8 +124,72 @@ Safe mutation helper for replacing and deleting nodes, then validating the resul
 ### Construction
 ```js
 const arbFromCode = new Arborist(script);
+const memoryEfficientArb = new Arborist(script, {
+  compactScopes: true,
+  retainTokens: false,
+});
 const arbFromAst = new Arborist(generateFlatAST(script));
 ```
+
+Options passed with source code are reused for every validated rebuild.
+
+### Replacement modes
+
+- A **full rebuild** generates source, reparses it, and recreates detailed scope and identifier metadata.
+- A **metadata-reuse rebuild** generates source and reparses the basic AST, but restores verified compact scope metadata instead of running scope analysis again.
+
+Arborist always regenerates source and reparses an AST after successful mutations. The optimization changes how much metadata must be recomputed; it does not skip rebuilding the structural AST.
+
+With `compactScopes: true`, a replacement batch is eligible for a metadata-reuse rebuild only when all of these conditions hold:
+
+1. Detailed metadata is enabled and the current AST contains compact scopes.
+2. The batch contains at least one replacement and no deletions.
+3. Every replacement is one of these explicitly supported forms:
+   - A `Literal` that remains in the same category: string, number, boolean, null, BigInt, or regular expression.
+   - A `TemplateElement` that keeps the same `tail` role and changes `value.raw` to plain delimiter-free text.
+   - A `YieldExpression` that keeps the exact same `argument` node and changes only `delegate`.
+   - A `ForOfStatement` that keeps the exact same `left`, `right`, and `body` nodes and changes only `await`; enabling `await` additionally requires an enclosing async function.
+   - A `BinaryExpression` operator change with the exact same `left` and `right` node objects.
+   - A `LogicalExpression` operator change with the exact same `left` and `right` node objects.
+   - An `AssignmentExpression` operator change with the exact same `left` and `right` node objects.
+   - A `UnaryExpression` operator change with the exact same `argument` node object.
+   - An `UpdateExpression` operator or prefix change with the exact same `argument` node object.
+4. No target is part of a directive prologue, because changing directives can alter strict-mode scope semantics.
+5. Replacement nodes do not introduce new leading or trailing comments.
+6. Every node's scope resolves into the compact scope graph. Ancestry and lineage
+   are reconstructed from the newly parsed parent and scope links instead of
+   being retained in the snapshot.
+7. After reparsing, node count, node type, `parentKey`, and parent `nodeId` match at every AST-array index.
+
+Declaration `references` arrays are also reconstructed as the inverse of saved
+`declNode` links. This avoids retaining duplicate forward and reverse reference
+arrays while the old and new ASTs overlap in memory. Declaration links are
+stored as packed reference/declaration ID pairs when sparse. Identifier-dense
+programs retain the dense node-indexed representation when it requires fewer
+integers than packed pairs.
+
+Scope IDs are restored directly from compact scope records and their block node
+IDs, avoiding another typed array sized to the complete AST.
+
+Operand identity is required so an operator replacement cannot introduce changed identifiers or bindings under an otherwise approved expression type. Failure of any condition uses the full rebuild. Identifiers, bindings, other structural changes, directives, comments, deletions, and unknown nodes therefore never use metadata reuse.
+
+The replacement operator must also belong to the target node's ESTree operator family. For example, `&&` is not accepted for a queued `BinaryExpression`, because reparsing that source produces a `LogicalExpression`. Negative numbers, negative BigInts, `NaN`, and negative zero are likewise excluded because they cannot reparse as one `Literal` node.
+
+Compound assignment operators are not eligible when the left operand is an `ArrayPattern` or `ObjectPattern`; JavaScript only permits plain `=` assignment for destructuring targets. If a basic rebuild cannot parse generated source, Arborist skips the equivalent detailed parse and immediately restores the original AST.
+
+For metadata reuse, replacement template text cannot contain a backslash, backtick, or `${`. Those characters can escape or introduce template delimiters and therefore require a full rebuild. This restriction affects optimization eligibility only; such replacements remain supported through the normal validated rebuild path.
+
+When metadata reuse is selected, `retainTokens: false` is configured, and no parser or attached comments exist anywhere in the current AST, Arborist also uses a lean basic parse without token/comment arrays. Comment-bearing ASTs and token-retaining configurations always use the rich parse path.
+
+### Literal `value` and `raw`
+
+For ordinary string, boolean, null, decimal, hexadecimal, and similar literals, escodegen checks whether `raw` represents `value`; a stale `raw` value is normally ignored. For example, `{value: 2, raw: '1'}` generates `2`.
+
+Do not rely on that behavior for every literal form. BigInt generation uses `bigint`/`raw`, regular-expression generation uses `regex`, and numeric-separator literals can preserve an underscore-containing `raw` string. When changing those literals, update all corresponding fields or remove stale formatting fields where supported.
+
+### Iterative convergence
+
+Every successful Arborist replacement updates `arb.script`, regardless of rebuild mode. `applyIteratively()` compares the generated source before and after each complete pass, so rejected edits and replacements that emit the same source converge immediately. Arborist object identity detects a modifier that returns a different mutation session; no root marker or Node.js crypto dependency is used.
 
 ### Important Properties
 - `script`: current generated script
@@ -98,6 +204,9 @@ const arbFromAst = new Arborist(generateFlatAST(script));
 - Low-level queueing primitive used by the convenience helpers below
 - Marks a node for replacement when `replacementNode` is provided
 - Marks a node for deletion when omitted
+- Ignores a target when that node or one of its ancestors is already marked
+- Allows any number of sibling targets, including adjacent children of the same array
+- Distinguishes replacement marks from deletion marks when deciding whether a removable parent can be deleted
 
 #### `replaceNode(targetNode, replacementNode)`
 - Queues a replacement without relying on an optional second argument
@@ -112,17 +221,40 @@ const arbFromAst = new Arborist(generateFlatAST(script));
 
 #### `applyChanges()`
 - Applies queued replacements/deletions
+- Groups large sibling batches and ordered adjacent replacement/deletion runs by their parent array
 - Regenerates code
 - Reparses the result
 - Reverts if the generated code is invalid
 - Returns number of applied changes
+
+#### `finalizeScopes()`
+- Requires an empty mutation queue
+- Rebuilds a compact-scope Arborist once with full `eslint-scope` metadata
+- Returns the same Arborist instance
+- Is a no-op that preserves AST identity when full scopes already exist
+- Swaps the AST and options only after a successful rebuild
+- Keeps later `applyChanges()` calls in full-scope mode
+
+```js
+const arb = new Arborist(source, {
+  compactScopes: true,
+  retainTokens: false,
+});
+
+// Perform any number of compact editing passes.
+arb.applyChanges();
+
+// Materialize raw eslint-scope fields only when a consumer needs them.
+arb.finalizeScopes();
+console.log(arb.ast[0].allScopes[0].set);
+```
 
 ### Gotchas
 - Deleting a node may target a higher removable parent for validity
 - Deleting or replacing the root behaves differently from leaf edits
 - Comments are merged and preserved where possible, but complex transforms should still be tested
 
-## `applyIteratively(script, funcs, maxIterations?)`
+## `applyIteratively(script, funcs, options?)`
 Runs one or more Arborist-based transforms repeatedly until no changes are made or the iteration limit is reached.
 
 ### Typical Use
@@ -136,8 +268,40 @@ function transform(arb) {
   return arb;
 }
 
-const result = applyIteratively(script, [transform], 3);
+const result = applyIteratively(script, [transform], {
+  maxIterations: 3,
+  mode: 'batch',
+  arboristOptions: {
+    compactScopes: true,
+    retainTokens: false,
+  },
+});
 ```
+
+To preview all planned iterative defaults without spelling them individually:
+
+```js
+const result = applyIteratively(script, modifiers, {
+  nextMajorDefaults: true,
+});
+// Equivalent defaults: mode: 'batch', compactScopes: true,
+// retainTokens: false. Explicit mode/arboristOptions still override them.
+```
+
+The numeric third argument remains supported as shorthand for
+`{maxIterations: number}`.
+
+### Modes
+
+- `mode: 'sequential'` is the current default. It rebuilds after each modifier, so a later modifier sees the earlier modifier's regenerated AST.
+- `mode: 'batch'` runs every modifier against one working AST and rebuilds once at the end of the pass. Use it for independent modifiers that can queue their edits together.
+- Batch mode throws if a modifier returns a different Arborist while the current one has pending edits. Use sequential mode for that pipeline so edits are never discarded.
+- Ordinary modifier exceptions are logged when enabled and do not prevent later modifiers from running.
+
+The next major release is planned to make `batch` the default and to construct
+the internal iterative Arborist with `compactScopes: true` and
+`retainTokens: false` by default. Pass `mode` and `arboristOptions` explicitly
+when behavior must remain stable across that release.
 
 ### Notes
 - Useful when one transform unlocks another in a later pass

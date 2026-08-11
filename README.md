@@ -163,7 +163,7 @@ These cover three of the most common flAST workflows:
 ## What You Get Back
 `generateFlatAST(code)` returns an array where:
 - `ast[0]` is the root `Program` node.
-- Every node has a stable `nodeId`.
+- Every node has a stable `nodeId` equal to its array index: `ast[node.nodeId] === node`.
 - Every node can expose `parentNode`, `childNodes`, `parentKey`, and `src`.
 - `ast[0].typeMap` groups nodes by type for fast lookups and exposes `typeList` for the unique node types found in the script.
 - Identifiers can expose `declNode` and `references`.
@@ -308,6 +308,20 @@ function foldSimpleMath(arb) {
 console.log(applyIteratively('const x = 1 + 2 + 3;', [foldSimpleMath]));
 ```
 
+Independent transforms can share one rebuild per pass:
+
+```js
+const result = applyIteratively(source, [replaceStrings, simplifyMath], {
+  mode: 'batch',
+  arboristOptions: {compactScopes: true, retainTokens: false},
+});
+```
+
+Use `mode: 'sequential'` when a later transform must inspect the AST rebuilt by
+an earlier transform. Sequential remains the default in this major version;
+the next major is planned to default iterative work to batched compact scopes
+without retained tokens.
+
 ## Which API Should I Use?
 - Use `parseCode` if you want the parser root as produced by Espree.
 - Use `generateRootNode` if you want a root node and are okay with `null` for invalid input.
@@ -324,6 +338,10 @@ console.log(applyIteratively('const x = 1 + 2 + 3;', [foldSimpleMath]));
 - Use `Arborist` for structural edits.
 - Re-parse or rely on `applyChanges()` / `applyIteratively()` whenever correctness matters.
 - Treat `detailed: false` as a performance mode for cases where you do not need scope or identifier metadata.
+- Use `retainTokens: false` when attached comments are needed but callers do not inspect `ast[0].tokens`; sources without possible comment markers then avoid allocating lexer arrays entirely, and Arborist preserves this option across rebuilds.
+- Use `compactScopes: true` when callers only need flAST's documented scope relationships, not additional `eslint-scope` internals such as `set` or `through`.
+- Call `arb.finalizeScopes()` after compact editing only when a consumer needs raw `eslint-scope` internals. It performs one full rebuild and keeps later edits in full-scope mode.
+- Arborist can reuse compact scope metadata for verified literal and operator-only replacements. It always regenerates source and reparses the structural AST; unsupported mutations fall back to full scope analysis.
 
 ## Structure Detection Use Cases
 flAST works especially well for identifying repeated code structures such as:
@@ -354,6 +372,10 @@ See the dedicated guide: [docs/structure-detection.md](docs/structure-detection.
 - By default, flAST will retry parsing as `sourceType: 'script'` if parsing as a module fails in a compatible way.
 - `detailed: false` removes scope, ancestry, and identifier relationship metadata.
 - `includeSrc: false` skips storing `src` on nodes.
+- `retainTokens: false` releases parser tokens after comment attachment to reduce retained memory.
+- `compactScopes: true` releases undocumented `eslint-scope` internals after projecting the documented scope and identifier relationships.
+- The next breaking release is expected to make `retainTokens: false` the default; set `retainTokens: true` explicitly if your integration reads `ast[0].tokens`.
+- Preview the planned defaults with `{nextMajorDefaults: true}` or `FLAST_NEXT_MAJOR_DEFAULTS=1`. Explicit options override the preview, and `{nextMajorDefaults: false}` disables the environment flag for one operation.
 - `Arborist.applyChanges()` validates by regenerating and reparsing code before committing the updated script.
 - Replacing the root node behaves differently from replacing a non-root node; it swaps the entire output program.
 - Comments are preserved where possible during replacements and deletions, but you should still test transforms that move or remove large sections of code.

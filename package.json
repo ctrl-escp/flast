@@ -5,8 +5,16 @@
   "main": "src/index.js",
   "types": "src/types.d.ts",
   "type": "module",
+  "files": [
+    "src",
+    "docs",
+    "examples",
+    "LICENSE",
+    "README.md"
+  ],
   "scripts": {
     "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
     "prepare": "husky",
     "test": "node --test",
     "test:coverage": "node --test --experimental-test-coverage"
@@ -27,15 +35,15 @@
   },
   "homepage": "https://github.com/ctrl-escp/flast#readme",
   "dependencies": {
-    "escodegen": "npm:@javascript-obfuscator/escodegen",
+    "escodegen": "npm:@javascript-obfuscator/escodegen@2.4.2",
     "eslint-scope": "^9.1.2",
     "espree": "^11.2.0"
   },
   "devDependencies": {
-    "eslint": "^10.0.3",
+    "@eslint/eslintrc": "^3.3.6",
     "@eslint/js": "^10.0.1",
-    "@eslint/eslintrc": "^3.3.5",
-    "globals": "^17.4.0",
+    "eslint": "^10.7.0",
+    "globals": "^17.7.0",
     "husky": "^9.1.7"
   }
 }

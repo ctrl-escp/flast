@@ -2,7 +2,7 @@ import path from 'node:path';
 import assert from 'node:assert';
 import {describe, it} from 'node:test';
 import {fileURLToPath} from 'node:url';
-import {generateFlatAST, generateCode} from '../src/index.js';
+import {extractNodesFromRoot, generateFlatAST, generateCode, generateRootNode, parseCode} from '../src/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -87,6 +87,72 @@ describe('Functionality tests', () => {
     const detailedNoSrcAst = generateFlatAST(code, {detailed: true, includeSrc: false});
     assert.equal(detailedNoSrcAst[0].src, undefined, 'Flat AST includes details despite \'detailed\' option set to true and \'includeSrc\' option set to false.');
   });
+  it('Can release parser tokens after attaching comments', () => {
+    const code = '// keep this comment\nconst value = 1;';
+    const defaultAst = generateFlatAST(code);
+    const compactAst = generateFlatAST(code, {retainTokens: false});
+
+    assert.ok(defaultAst[0].tokens.length > 0, 'Tokens should remain available by default.');
+    assert.equal(compactAst[0].tokens, undefined, 'Tokens should be released when retainTokens is false.');
+    assert.match(generateCode(compactAst[0]), /keep this comment/);
+  });
+  it('Can preview token-retention defaults per call', () => {
+    const futureAst = generateFlatAST('const value = 1;', {nextMajorDefaults: true});
+    const overriddenAst = generateFlatAST('const value = 1;', {
+      nextMajorDefaults: true,
+      compactScopes: false,
+      retainTokens: true,
+    });
+    const futureRoot = generateRootNode('const value = 1;', {nextMajorDefaults: true});
+    const extractedAst = extractNodesFromRoot(parseCode('const value = 1;', {
+      sourceType: 'module',
+      comment: true,
+      tokens: true,
+    }), {nextMajorDefaults: true, includeSrc: false});
+
+    assert.equal(futureAst[0].tokens, undefined);
+    assert.ok(Object.values(futureAst[0].allScopes).every(scope => !('set' in scope) && !('through' in scope)));
+    assert.ok(overriddenAst[0].tokens.length);
+    assert.ok('set' in overriddenAst[0].allScopes[0] || 'through' in overriddenAst[0].allScopes[0]);
+    assert.equal(futureRoot.tokens, undefined);
+    assert.equal(extractedAst[0].tokens, undefined);
+    assert.ok(Object.values(extractedAst[0].allScopes).every(scope => !('set' in scope) && !('through' in scope)));
+  });
+  it('Applies and can explicitly disable environment-preview defaults', () => {
+    const originalValue = process.env.FLAST_NEXT_MAJOR_DEFAULTS;
+    try {
+      process.env.FLAST_NEXT_MAJOR_DEFAULTS = 'true';
+      const futureAst = generateFlatAST('const value = 1;');
+      const currentAst = generateFlatAST('const value = 1;', {nextMajorDefaults: false});
+
+      assert.equal(futureAst[0].tokens, undefined);
+      assert.ok(Object.values(futureAst[0].allScopes).every(scope => !('set' in scope) && !('through' in scope)));
+      assert.ok(currentAst[0].tokens.length);
+      assert.ok('set' in currentAst[0].allScopes[0] || 'through' in currentAst[0].allScopes[0]);
+    } finally {
+      if (originalValue === undefined) delete process.env.FLAST_NEXT_MAJOR_DEFAULTS;
+      else process.env.FLAST_NEXT_MAJOR_DEFAULTS = originalValue;
+    }
+  });
+  it('Avoids lexer arrays for comment-free token-free parsing', () => {
+    const ast = generateFlatAST('const value = 1;', {retainTokens: false});
+
+    assert.equal(ast[0].tokens, undefined);
+    assert.equal(ast[0].comments, undefined);
+  });
+  it('Preserves nonstandard comment forms when tokens are not retained', () => {
+    const fixtures = [
+      '#!/usr/bin/env node\nconst value = 1;',
+      '<!-- legacy comment\nconst value = 1;',
+    ];
+
+    for (const code of fixtures) {
+      const ast = generateFlatAST(code, {retainTokens: false});
+      assert.ok(ast[0].comments?.length, `Comment syntax was not detected in: ${code}`);
+      assert.ok(ast[0].body[0].leadingComments?.length, `Comment was not attached in: ${code}`);
+      assert.equal(ast[0].tokens, undefined);
+    }
+  });
   it('Verify a script is parsed in "sloppy mode" if strict mode is restricting parsing', () => {
     const code = 'let a; delete a;';
     let ast = [];
@@ -130,8 +196,7 @@ describe('Functionality tests', () => {
     }
     assert.deepStrictEqual(result, expectedResult);
   });
-  it('Verify generateRootNode returns null for invalid code', async () => {
-    const {generateRootNode} = await import(path.resolve(`${__dirname}/../src/index.js`));
+  it('Verify generateRootNode returns null for invalid code', () => {
     const result = generateRootNode('return a;', {alternateSourceTypeOnFailure: false});
     assert.equal(result, null);
   });

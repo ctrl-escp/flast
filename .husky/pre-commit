@@ -1,2 +1,2 @@
 npm test
-npx eslint .
+git diff --cached --name-only --diff-filter=ACM -z -- '*.js' '*.mjs' '*.cjs' | xargs -0 npx eslint
