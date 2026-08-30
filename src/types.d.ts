@@ -402,6 +402,79 @@ export function applyIterativelyAsync(script: string, funcs: ArboristModifier[],
   options?: ApplyIterativelyOptions): Promise<string>;
 
 /**
+ * A queued edit that {@link applyChangesSafely} could not keep.
+ *
+ * `target` is the pre-apply node. After a rebuild those objects are no longer
+ * in `arborist.ast`. `modifier` and `iteration` are set only by the iterative
+ * safely wrappers (`iteration` is the one-based pass number).
+ */
+export interface RejectedChange {
+  type: 'replace' | 'delete';
+  nodeId: number;
+  target: ASTNode;
+  replacement?: ASTNode | object;
+  error?: string;
+  modifier?: string;
+  iteration?: number;
+}
+
+/** Result of {@link applyChangesSafely}. */
+export interface ApplyChangesSafelyResult {
+  /** The same Arborist instance passed in, with valid edits applied. */
+  arborist: Arborist;
+  /** Count returned by the successful `applyChanges()` commit. */
+  applied: number;
+  /** Edits that failed isolation or were skipped by a root replacement. */
+  rejected: RejectedChange[];
+}
+
+/** Result of {@link applyIterativelySafely} and {@link applyIterativelyAsyncSafely}. */
+export interface ApplyIterativelySafelyResult {
+  /** Source after every valid commit in the run. */
+  script: string;
+  /** Concatenated rejected edits from every safe commit. */
+  rejected: RejectedChange[];
+}
+
+/**
+ * Apply every queued edit that still produces valid source.
+ *
+ * Use this instead of {@link Arborist.applyChanges} when a modifier may queue
+ * some invalid replacements or deletions and the valid ones should still be
+ * kept. Isolation trials use `serialize` / `deserialize` against the original
+ * script; the input instance is updated only for the final accepted commit.
+ *
+ * @example
+ * const {arborist, applied, rejected} = applyChangesSafely(arb);
+ */
+export function applyChangesSafely(arborist: Arborist): ApplyChangesSafelyResult;
+
+/**
+ * Same loop as {@link applyIteratively}, but each sequential (or batch)
+ * commit uses {@link applyChangesSafely}.
+ *
+ * @example
+ * const {script, rejected} = applyIterativelySafely(source, [foldMath, rename]);
+ */
+export function applyIterativelySafely(script: string, funcs: ArboristModifier[],
+  maxIterations?: number): ApplyIterativelySafelyResult;
+export function applyIterativelySafely(script: string, funcs: ArboristModifier[],
+  options?: ApplyIterativelyOptions): ApplyIterativelySafelyResult;
+
+/**
+ * Same loop as {@link applyIterativelyAsync}, committing with
+ * {@link applyChangesSafely}. Worker timeouts still apply mirrored marks;
+ * isolation runs on the main thread.
+ *
+ * @example
+ * const {script, rejected} = await applyIterativelyAsyncSafely(source, [timed]);
+ */
+export function applyIterativelyAsyncSafely(script: string, funcs: ArboristModifier[],
+  maxIterations?: number): Promise<ApplyIterativelySafelyResult>;
+export function applyIterativelyAsyncSafely(script: string, funcs: ArboristModifier[],
+  options?: ApplyIterativelyOptions): Promise<ApplyIterativelySafelyResult>;
+
+/**
  * Shared opt-in logger. Output is disabled until a level is selected.
  *
  * @example

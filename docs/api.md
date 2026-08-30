@@ -6,8 +6,11 @@ This guide focuses on flAST's current public API surface and the behaviors that 
 - [Exports](#exports)
 - [`generateFlatAST(inputCode, opts?)`](#generateflatastinputcode-opts)
 - [`Arborist`](#arborist)
+- [`applyChangesSafely(arborist)`](#applychangessafelyarborist)
 - [`applyIteratively(script, funcs, options?)`](#applyiterativelyscript-funcs-options)
+- [`applyIterativelySafely(script, funcs, options?)`](#applyiterativelysafelyscript-funcs-options)
 - [`applyIterativelyAsync(script, funcs, options?)`](#applyiterativelyasyncscript-funcs-options)
+- [`applyIterativelyAsyncSafely(script, funcs, options?)`](#applyiterativelyasyncsafelyscript-funcs-options)
 - [`logger`](#logger)
 - [`generateCode(rootNode, opts?)`](#generatecoderootnode-opts)
 - [`generateRootNode(inputCode, opts?)`](#generaterootnodeinputcode-opts)
@@ -19,8 +22,11 @@ This guide focuses on flAST's current public API surface and the behaviors that 
 ```js
 import {
   Arborist,
+  applyChangesSafely,
   applyIteratively,
+  applyIterativelySafely,
   applyIterativelyAsync,
+  applyIterativelyAsyncSafely,
   generateFlatAST,
   logger,
   generateCode,
@@ -225,6 +231,7 @@ Every successful Arborist replacement updates `arb.script`, regardless of rebuil
 - `serialize()` stores `script`, `options`, replacement `[nodeId, replacement]` pairs, and deletion `nodeId`s
 - The AST is omitted; the same script and options rebuild the same `nodeId`s
 - `deserialize` constructs a new Arborist and re-marks those ids
+- Isolation trials in `applyChangesSafely` use this path so a subset can be tested without rematching a rebuilt tree
 
 #### `applyChanges()`
 - Applies queued replacements/deletions
@@ -232,6 +239,7 @@ Every successful Arborist replacement updates `arb.script`, regardless of rebuil
 - Regenerates code
 - Reparses the result
 - Reverts if the generated code is invalid
+- Clears the queues even when it reverts, so callers that need the original marks must snapshot first
 - Returns number of applied changes
 
 #### `finalizeScopes()`
@@ -260,6 +268,56 @@ console.log(arb.ast[0].allScopes[0].set);
 - Deleting a node may target a higher removable parent for validity
 - Deleting or replacing the root behaves differently from leaf edits
 - Comments are merged and preserved where possible, but complex transforms should still be tested
+
+## `applyChangesSafely(arborist)`
+Production commit when a modifier may queue some invalid replacements or deletions and the valid ones should still be kept.
+
+`applyChanges()` stays atomic: one bad edit reverts the whole batch. Use that when a mixed queue should fail together (for example `applyIteratively` convergence). Use `applyChangesSafely` when losing hundreds of good edits because of one bad one is the worse outcome.
+
+```js
+const arb = new Arborist('const a = 1, b = 2;');
+const literals = arb.ast[0].typeMap.Literal;
+arb.replaceNode(literals[0], {type: 'Literal', value: 10});
+arb.replaceNode(literals[1], {type: 'EmptyStatement'});
+
+const {arborist, applied, rejected} = applyChangesSafely(arb);
+// arborist === arb
+// arb.script === 'const a = 10, b = 2;'
+// applied === 1
+// rejected[0] describes the EmptyStatement replacement
+```
+
+### Return value
+- `arborist`: the same instance that was passed in
+- `applied`: count returned by the successful `applyChanges()` commit
+- `rejected`: edits that could not be kept
+
+Each rejected record has:
+
+- `type`: `'replace'` or `'delete'`
+- `nodeId`: index on the **pre-apply** tree
+- `target`: that original `ASTNode` (`type`, `src`, `parentKey`, …)
+- `replacement`: queued replacement, only for replaces
+- `error`: generate/parse message, an interaction note, or a skip reason
+- `modifier` / `iteration`: set only by the iterative safely wrappers
+
+An empty queue is a no-op: `{applied: 0, rejected: []}`.
+
+### Isolation algorithm
+Trials always start from the original `serialize()` snapshot. After a rebuild, old node objects are stale; `nodeId` is stable for the same script and options, so the AST is omitted on purpose.
+
+1. Snapshot the queue (and `script`) immediately. `applyChanges()` clears marks even when it reverts.
+2. Fast path: call `applyChanges()` on the input instance. If that commit succeeds, return. Isolation is skipped.
+3. If the whole batch fails, try the group, then split any failing group in half and isolate each half. One bad edit among a thousand is found in about ten trials (`O(k log n)` for `k` independent faults).
+4. A single failing change is rejected with its generate/parse error.
+5. The union of accepted halves is tried once. If that fails, the halves interact: keep members in original order only while the growing prefix still parses. The rest are rejected as interactions.
+6. Re-queue only the accepted marks on the input Arborist (by current `nodeId`) and call `applyChanges()` once.
+
+When the program root is marked, `applyChanges()` replaces the entire program and ignores sibling marks. Those siblings are reported as rejected so they are not mistaken for applied edits.
+
+Trial deserializations use lean options (`detailed: false`, `includeSrc: false`, `retainTokens: false`) because those flags do not change flatten order. `parseOpts` and script `sourceType` are kept so sloppy syntax such as `with` still parses. The final apply uses the input instance's real options. Isolation trials stay on the main thread.
+
+If the session was built from an AST array and `script` is empty, the helper fills `script` from `ast[0].src` or `generateCode` before serializing.
 
 ## `applyIteratively(script, funcs, options?)`
 Runs one or more Arborist-based transforms repeatedly until no changes are made or the iteration limit is reached.
@@ -349,13 +407,51 @@ when behavior must remain stable across that release.
 - Resilient against invalid end states because Arborist validates changes
 - Later transforms can still run even if an earlier one throws
 - `maxMarkedNodes` stops a modifier at the cap without discarding its queue
+- Use `applyIterativelySafely` when a modifier may queue some invalid edits and the rest should still apply
+
+## `applyIterativelySafely(script, funcs, options?)`
+Same arguments, modes, and `maxMarkedNodes` behavior as `applyIteratively`. Each sequential (or batch) commit uses `applyChangesSafely` instead of atomic `applyChanges()`.
+
+Returns `{script, rejected}` rather than a bare string so callers can review what a modifier got wrong. `rejected` is concatenated across every safe commit in the run.
+
+- Sequential: isolate after each modifier that queued edits. Later modifiers see the kept tree. Each rejected record is stamped with `modifier` and a one-based `iteration` matching the iteration log.
+- Batch: isolate the combined queue once per pass. Rejected records get `iteration` only; the queue is not attributed to one modifier.
+- A fully rejected pass leaves source unchanged and stops, same as today's "no changes" signal.
+- A replaced Arborist with no queued marks is unchanged.
+
+```js
+function mixed(arb) {
+  const literals = arb.ast[0].typeMap.Literal;
+  arb.replaceNode(literals[0], {type: 'Literal', value: 10});
+  arb.replaceNode(literals[1], {type: 'EmptyStatement'});
+  return arb;
+}
+
+const {script, rejected} = applyIterativelySafely('const a = 1, b = 2;', [mixed]);
+// script === 'const a = 10, b = 2;'
+// rejected[0].modifier === 'mixed'
+// rejected[0].iteration === 1
+```
+
+`applyIteratively()` itself is unchanged. Use it when a mixed queue should fail together.
 
 ## `applyIterativelyAsync(script, funcs, options?)`
 Same loop as `applyIteratively`, returning a Promise. When `fn.maxRunTimeMs` is
-set, that invocation runs in a Node `worker_threads` isolate. flAST sends an
-Arborist snapshot, reconstructs the modifier from function source, and mirrors
-`nodeId` marks onto the original Arborist. After the budget, the worker is
-terminated; marks already received still apply.
+set, that invocation runs in a Node `worker_threads` isolate. After the budget,
+the worker is terminated; marks already received still apply.
+
+### Worker reconstruction
+Workers cannot receive function objects. The main thread sends
+`Function.prototype.toString.call(modifier)` plus an `Arborist.serialize()`
+snapshot. The isolate rebuilds the function with `(0, eval)(\`(${modifierSource})\`)`:
+
+- `Function.prototype.toString` is the only structured-cloneable view of the modifier.
+- `(0, eval)` is **indirect eval**. It runs in the worker global scope, not in the worker module's local scope (`parentPort`, `snapshot`, imported `Arborist`). Direct `eval(modifierSource)` would also inherit those locals.
+- The extra parentheses force `toString` output of a declaration or expression to parse as an expression so `eval` returns the function.
+- Closures, closed-over tables, and other captured bindings are not available in the worker. Put constants inside the function or read them from the AST. There is no public context bag.
+- This evaluates caller-supplied source in a Node isolate. It is not a sandbox.
+
+Marks are posted as they queue (`_onMark` → `{nodeId, replacement}`) so the main Arborist can mirror them before `terminate()`. Replacements must be structured-cloneable. In-flight mark messages may be dropped when the worker is terminated. Rebuild time is not part of the budget.
 
 The mark cap is the same as the sync API (`fn.maxMarkedNodes` or
 `{maxMarkedNodes}`). If both limits are set, whichever hits first stops the
@@ -377,9 +473,17 @@ replaceLiterals.maxMarkedNodes = 50;
 const result = await applyIterativelyAsync(source, [replaceLiterals]);
 ```
 
-Put any tables or constants inside the function (or read them from the AST).
-There is no public context bag. In-flight mark messages may be dropped when
-the worker is terminated. Rebuild time is not part of the budget.
+## `applyIterativelyAsyncSafely(script, funcs, options?)`
+Same loop as `applyIterativelyAsync`, committing with `applyChangesSafely`.
+
+Worker timeouts still reconstruct the modifier with `Function.prototype.toString` and `(0, eval)`, still mirror `nodeId` marks, and still `terminate()` after `fn.maxRunTimeMs`. Isolation then runs on the **main thread** against those mirrored marks. Isolation trials are not dispatched to workers.
+
+```js
+mixed.maxRunTimeMs = 1000;
+const {script, rejected} = await applyIterativelyAsyncSafely(source, [mixed]);
+```
+
+Returns `{script, rejected}` with the same sequential/batch stamps as `applyIterativelySafely`.
 
 ## `logger`
 Simple shared logger used by flAST utilities.

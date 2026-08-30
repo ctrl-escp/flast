@@ -335,7 +335,9 @@ numeric third argument is also planned to become options-only.
 - Use `generateFlatAST` if you want the main flAST workflow: flattened nodes plus metadata.
 - Use `generateCode` if you want code back from an AST node.
 - Use `Arborist` if you want safe deletions/replacements with validation.
+- Use `applyChangesSafely` if a modifier may queue some invalid edits and the valid ones should still apply.
 - Use `applyIteratively` if you want a transformation pipeline that can run multiple passes until changes stop.
+- Use `applyIterativelySafely` / `applyIterativelyAsyncSafely` for the same pipelines when a mixed queue should keep every valid edit.
 - Use `applyIterativelyAsync` if a modifier should stop after `fn.maxRunTimeMs`.
 - Use `logger` if you want to debug or redirect flAST logging.
 

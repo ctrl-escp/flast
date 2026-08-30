@@ -1,4 +1,5 @@
 import {Arborist, ModifierRunLimitError} from '../arborist.js';
+import {applyChangesSafely} from './applyChangesSafely.js';
 import {logger} from './logger.js';
 import {shouldUseNextMajorDefaults} from './nextMajorDefaults.js';
 
@@ -212,6 +213,41 @@ function runModifier(arborist, modifier, iteration, defaultMaxMarkedNodes) {
 }
 
 /**
+ * Commit a pending queue with atomic applyChanges or applyChangesSafely.
+ *
+ * @example
+ * commitQueuedChanges(arborist, false); // {applied: 1, rejected: []}
+ *
+ * @param {Arborist} arborist Session with queued edits.
+ * @param {boolean} safely Whether to keep valid edits when the batch is invalid.
+ * @return {{applied: number, rejected: import('./applyChangesSafely.js').RejectedChange[]}} Commit result.
+ */
+function commitQueuedChanges(arborist, safely) {
+  if (!safely) return {applied: arborist.applyChanges(), rejected: []};
+  const result = applyChangesSafely(arborist);
+  return {applied: result.applied, rejected: result.rejected};
+}
+
+/**
+ * Stamp sequential-commit metadata onto rejected records.
+ *
+ * @example
+ * stampRejected([{type: 'delete', nodeId: 1, target: {}}], 'foldMath', 1)[0].modifier; // 'foldMath'
+ *
+ * @param {import('./applyChangesSafely.js').RejectedChange[]} rejected Isolated failures.
+ * @param {string} modifierName Modifier that queued the edits.
+ * @param {number} iteration One-based pass number matching iteration logs.
+ * @return {import('./applyChangesSafely.js').RejectedChange[]} The same array.
+ */
+function stampRejected(rejected, modifierName, iteration) {
+  for (let i = 0; i < rejected.length; i++) {
+    rejected[i].modifier = modifierName;
+    rejected[i].iteration = iteration;
+  }
+  return rejected;
+}
+
+/**
  * Apply one modifier's result to the sequential or batch pass.
  *
  * @param {'batch'|'sequential'} mode Rebuild strategy.
@@ -219,23 +255,33 @@ function runModifier(arborist, modifier, iteration, defaultMaxMarkedNodes) {
  * @param {Arborist} nextArborist Session returned by the modifier.
  * @param {number} pendingBefore Queued-change count before the modifier ran.
  * @param {string} modifierName Name used in batch-compatibility errors.
- * @return {{arborist: Arborist, changes: number, empty: boolean}} Updated session and change delta.
+ * @param {boolean} [safely=false] Use applyChangesSafely for sequential commits.
+ * @param {number} [iteration] One-based pass number for rejected stamps.
+ * @return {{arborist: Arborist, changes: number, empty: boolean, rejected: import('./applyChangesSafely.js').RejectedChange[]}}
+ *   Updated session and change delta.
  */
-function applyModifierOutcome(mode, previousArborist, nextArborist, pendingBefore, modifierName) {
+function applyModifierOutcome(mode, previousArborist, nextArborist, pendingBefore, modifierName,
+  safely = false, iteration = 1) {
   const wasReplaced = nextArborist !== previousArborist;
   if (mode === 'batch' && wasReplaced && previousArborist.getNumberOfChanges() > 0) {
     throw new BatchCompatibilityError(modifierName);
   }
-  if (!nextArborist.ast?.length) return {arborist: nextArborist, changes: 0, empty: true};
+  if (!nextArborist.ast?.length) {
+    return {arborist: nextArborist, changes: 0, empty: true, rejected: []};
+  }
   let changes = 0;
+  let rejected = [];
   if (mode === 'sequential') {
     const queuedChanges = nextArborist.getNumberOfChanges();
-    if (queuedChanges) changes += nextArborist.applyChanges();
-    else if (wasReplaced && nextArborist.script !== previousArborist.script) changes++;
+    if (queuedChanges) {
+      const commit = commitQueuedChanges(nextArborist, safely);
+      changes += commit.applied;
+      rejected = safely ? stampRejected(commit.rejected, modifierName, iteration) : commit.rejected;
+    } else if (wasReplaced && nextArborist.script !== previousArborist.script) changes++;
   } else if (wasReplaced && pendingBefore === 0 && nextArborist.script !== previousArborist.script) {
     changes++;
   }
-  return {arborist: nextArborist, changes, empty: false};
+  return {arborist: nextArborist, changes, empty: false, rejected};
 }
 
 /**
@@ -243,14 +289,22 @@ function applyModifierOutcome(mode, previousArborist, nextArborist, pendingBefor
  *
  * @param {'batch'|'sequential'} mode Rebuild strategy.
  * @param {Arborist} arborist Current session.
- * @return {number} Changes applied by the batch commit.
+ * @param {boolean} [safely=false] Use applyChangesSafely for the batch commit.
+ * @param {number} [iteration] One-based pass number for rejected stamps.
+ * @return {{applied: number, rejected: import('./applyChangesSafely.js').RejectedChange[]}} Batch commit result.
  */
-function commitBatchIfNeeded(mode, arborist) {
+function commitBatchIfNeeded(mode, arborist, safely = false, iteration = 1) {
   if (mode === 'batch' && arborist.ast?.length) {
     const queuedChanges = arborist.getNumberOfChanges();
-    if (queuedChanges) return arborist.applyChanges();
+    if (queuedChanges) {
+      const commit = commitQueuedChanges(arborist, safely);
+      if (safely) {
+        for (let i = 0; i < commit.rejected.length; i++) commit.rejected[i].iteration = iteration;
+      }
+      return commit;
+    }
   }
-  return 0;
+  return {applied: 0, rejected: []};
 }
 
 /**
@@ -393,7 +447,7 @@ function applyIteratively(script, funcs, maxIterationsOrOptions = defaultMaxIter
         if (outcome.empty) break;
       }
 
-      changesCounter += commitBatchIfNeeded(mode, arborist);
+      changesCounter += commitBatchIfNeeded(mode, arborist).applied;
       script = arborist.script;
       iteration++;
       logIterationComplete(iteration, iterationStartTime, changesCounter, arborist);
@@ -409,11 +463,87 @@ function applyIteratively(script, funcs, maxIterationsOrOptions = defaultMaxIter
 }
 
 /**
+ * Apply modifiers like {@link applyIteratively}, keeping valid edits when a
+ * commit would otherwise revert the whole queue.
+ *
+ * Same arguments, modes, and `maxMarkedNodes` behavior. Sequential mode
+ * isolates after each modifier that queued edits and stamps `modifier` plus
+ * one-based `iteration` on each rejected record. Batch mode isolates the
+ * combined queue once per pass and stamps only `iteration`.
+ *
+ * @example
+ * function mixed(arb) {
+ *   const literals = arb.ast[0].typeMap.Literal;
+ *   arb.replaceNode(literals[0], {type: 'Literal', value: 10});
+ *   arb.replaceNode(literals[1], {type: 'EmptyStatement'});
+ *   return arb;
+ * }
+ * const {script, rejected} = applyIterativelySafely('const a = 1, b = 2;', [mixed]);
+ * script; // 'const a = 10, b = 2;'
+ * rejected[0].modifier; // 'mixed'
+ *
+ * @param {string} script Target source.
+ * @param {Array<(arborist: Arborist) => Arborist>} funcs Ordered modifier functions.
+ * @param {number|ApplyIterativelyOptions} [maxIterationsOrOptions=500] Numeric legacy limit or options.
+ * @return {{script: string, rejected: import('./applyChangesSafely.js').RejectedChange[]}} Kept source and dropped edits.
+ */
+function applyIterativelySafely(script, funcs, maxIterationsOrOptions = defaultMaxIterations) {
+  const {maxIterations, currentIteration, maxMarkedNodes, mode, arboristOptions} =
+    normalizeApplyOptions(maxIterationsOrOptions);
+  if (maxIterations === 0) return {script, rejected: []};
+
+  let iteration = currentIteration || 0;
+  const rejected = [];
+  try {
+    let arborist = new Arborist(script, arboristOptions);
+    while (arborist.ast?.length && iteration < maxIterations) {
+      const iterationSource = arborist.script;
+      const logEnabled = isLogEnabled(logger.logLevels.LOG);
+      const iterationStartTime = logEnabled ? Date.now() : 0;
+      let changesCounter = 0;
+      const passNumber = iteration + 1;
+
+      for (let i = 0; i < funcs.length; i++) {
+        const modifier = funcs[i];
+        const previousArborist = arborist;
+        const pendingBefore = previousArborist.getNumberOfChanges();
+        const nextArborist = runModifier(previousArborist, modifier, iteration, maxMarkedNodes);
+        const outcome = applyModifierOutcome(
+          mode, previousArborist, nextArborist, pendingBefore, modifier.name || '<anonymous>',
+          true, passNumber);
+        arborist = outcome.arborist;
+        changesCounter += outcome.changes;
+        for (let j = 0; j < outcome.rejected.length; j++) rejected.push(outcome.rejected[j]);
+        if (outcome.empty) break;
+      }
+
+      const batch = commitBatchIfNeeded(mode, arborist, true, passNumber);
+      changesCounter += batch.applied;
+      for (let i = 0; i < batch.rejected.length; i++) rejected.push(batch.rejected[i]);
+      script = arborist.script;
+      iteration++;
+      logIterationComplete(iteration, iterationStartTime, changesCounter, arborist);
+      if (script === iterationSource) break;
+    }
+  } catch (error) {
+    if (error instanceof BatchCompatibilityError || error instanceof RangeError) throw error;
+    if (isLogEnabled(logger.logLevels.ERROR)) {
+      logger.error(`[-] Error on iteration #${iteration + 1}: ${error}\n${error.stack}`);
+    }
+  }
+  return {script, rejected};
+}
+
+/**
  * Async counterpart of {@link applyIteratively} with an optional worker timeout.
  *
  * Same arguments and mark-cap behavior. When `fn.maxRunTimeMs` is set, that
- * invocation runs in a `worker_threads` isolate. flAST mirrors `nodeId` marks
- * onto the original Arborist; `terminate()` stops the isolate after the budget.
+ * invocation runs in a `worker_threads` isolate. The main thread sends
+ * `Function.prototype.toString.call(modifier)`; the worker rebuilds it with
+ * `(0, eval)(\`(${modifierSource})\`)` (indirect eval in the worker global
+ * scope). Closures and captured tables do not come along. flAST mirrors
+ * `nodeId` marks onto the original Arborist; `terminate()` stops the isolate
+ * after the budget. This is not a sandbox.
  *
  * @example
  * replaceLiterals.maxRunTimeMs = 1000;
@@ -453,7 +583,7 @@ async function applyIterativelyAsync(script, funcs, maxIterationsOrOptions = def
         if (outcome.empty) break;
       }
 
-      changesCounter += commitBatchIfNeeded(mode, arborist);
+      changesCounter += commitBatchIfNeeded(mode, arborist).applied;
       script = arborist.script;
       iteration++;
       logIterationComplete(iteration, iterationStartTime, changesCounter, arborist);
@@ -468,4 +598,72 @@ async function applyIterativelyAsync(script, funcs, maxIterationsOrOptions = def
   return script;
 }
 
-export {applyIteratively, applyIterativelyAsync};
+/**
+ * Async counterpart of {@link applyIterativelySafely} with worker timeouts.
+ *
+ * Same worker behavior as {@link applyIterativelyAsync}: `fn.maxRunTimeMs`
+ * reconstructs the modifier in a `worker_threads` isolate via
+ * `Function.prototype.toString` and `(0, eval)`. Marks already mirrored onto
+ * the main Arborist still apply after `terminate()`. Isolation then runs on
+ * the main thread; trials are not dispatched to workers.
+ *
+ * @example
+ * mixed.maxRunTimeMs = 1000;
+ * const {script, rejected} = await applyIterativelyAsyncSafely(source, [mixed]);
+ *
+ * @param {string} script Target source.
+ * @param {Array<(arborist: Arborist) => Arborist>} funcs Ordered modifier functions.
+ * @param {number|ApplyIterativelyOptions} [maxIterationsOrOptions=500] Numeric legacy limit or options.
+ * @return {Promise<{script: string, rejected: import('./applyChangesSafely.js').RejectedChange[]}>} Kept source and dropped edits.
+ */
+async function applyIterativelyAsyncSafely(script, funcs, maxIterationsOrOptions = defaultMaxIterations) {
+  const {maxIterations, currentIteration, maxMarkedNodes, mode, arboristOptions} =
+    normalizeApplyOptions(maxIterationsOrOptions);
+  if (maxIterations === 0) return {script, rejected: []};
+
+  let iteration = currentIteration || 0;
+  const rejected = [];
+  try {
+    let arborist = new Arborist(script, arboristOptions);
+    while (arborist.ast?.length && iteration < maxIterations) {
+      const iterationSource = arborist.script;
+      const logEnabled = isLogEnabled(logger.logLevels.LOG);
+      const iterationStartTime = logEnabled ? Date.now() : 0;
+      let changesCounter = 0;
+      const passNumber = iteration + 1;
+
+      for (let i = 0; i < funcs.length; i++) {
+        const modifier = funcs[i];
+        const previousArborist = arborist;
+        const pendingBefore = previousArborist.getNumberOfChanges();
+        const maxRunTimeMs = resolveMaxRunTimeMs(modifier);
+        const nextArborist = maxRunTimeMs ?
+          await runModifierInWorker(previousArborist, modifier, iteration, maxMarkedNodes, maxRunTimeMs) :
+          runModifier(previousArborist, modifier, iteration, maxMarkedNodes);
+        const outcome = applyModifierOutcome(
+          mode, previousArborist, nextArborist, pendingBefore, modifier.name || '<anonymous>',
+          true, passNumber);
+        arborist = outcome.arborist;
+        changesCounter += outcome.changes;
+        for (let j = 0; j < outcome.rejected.length; j++) rejected.push(outcome.rejected[j]);
+        if (outcome.empty) break;
+      }
+
+      const batch = commitBatchIfNeeded(mode, arborist, true, passNumber);
+      changesCounter += batch.applied;
+      for (let i = 0; i < batch.rejected.length; i++) rejected.push(batch.rejected[i]);
+      script = arborist.script;
+      iteration++;
+      logIterationComplete(iteration, iterationStartTime, changesCounter, arborist);
+      if (script === iterationSource) break;
+    }
+  } catch (error) {
+    if (error instanceof BatchCompatibilityError || error instanceof RangeError) throw error;
+    if (isLogEnabled(logger.logLevels.ERROR)) {
+      logger.error(`[-] Error on iteration #${iteration + 1}: ${error}\n${error.stack}`);
+    }
+  }
+  return {script, rejected};
+}
+
+export {applyIteratively, applyIterativelyAsync, applyIterativelyAsyncSafely, applyIterativelySafely};
