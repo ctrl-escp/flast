@@ -941,4 +941,38 @@ describe('Arborist edge case tests', () => {
     assert.ok(arb.ast[0].tokens.length);
     assert.ok('set' in arb.ast[0].allScopes[0] || 'through' in arb.ast[0].allScopes[0]);
   });
+
+  it('Serializes script and nodeId marks without the AST', () => {
+    const arb = new Arborist('const values = [1, 2];');
+    const first = arb.ast.find(node => node.type === 'Literal' && node.value === 1);
+    const second = arb.ast.find(node => node.type === 'Literal' && node.value === 2);
+    arb.replaceNode(first, {type: 'Literal', value: 10, raw: '10'});
+    arb.deleteNode(second);
+    const snapshot = arb.serialize();
+
+    assert.equal(snapshot.script, 'const values = [1, 2];');
+    assert.equal(snapshot.replacements.length, 1);
+    assert.equal(snapshot.replacements[0][0], first.nodeId);
+    assert.ok(!('ast' in snapshot));
+
+    const restored = Arborist.deserialize(snapshot);
+    assert.equal(restored.script, arb.script);
+    assert.equal(restored.ast.find(node => node.nodeId === first.nodeId).type, 'Literal');
+    assert.equal(restored.getNumberOfChanges(), arb.getNumberOfChanges());
+    assert.equal(restored.applyChanges(), arb.applyChanges());
+    assert.equal(restored.script, arb.script);
+  });
+
+  it('Stops marking when maxMarkedNodes is armed', () => {
+    const arb = new Arborist('const values = [1, 2, 3];');
+    arb._maxMarkedNodes = 1;
+    arb._markedNodesCount = 0;
+    const literals = arb.ast[0].typeMap.Literal;
+    arb.replaceNode(literals[0], {type: 'Literal', value: 10, raw: '10'});
+    assert.throws(
+      () => arb.replaceNode(literals[1], {type: 'Literal', value: 20, raw: '20'}),
+      {name: 'ModifierRunLimitError'},
+    );
+    assert.equal(arb.getNumberOfChanges(), 1);
+  });
 });

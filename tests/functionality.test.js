@@ -33,6 +33,7 @@ describe('Functionality tests', () => {
       'generateRootNode',
       'parseCode',
       'applyIteratively',
+      'applyIterativelyAsync',
       'logger',
     ];
     const flast = await import(path.resolve(`${__dirname  }/../src/index.js`));

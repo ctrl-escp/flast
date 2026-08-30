@@ -7,6 +7,7 @@ This guide focuses on flAST's current public API surface and the behaviors that 
 - [`generateFlatAST(inputCode, opts?)`](#generateflatastinputcode-opts)
 - [`Arborist`](#arborist)
 - [`applyIteratively(script, funcs, options?)`](#applyiterativelyscript-funcs-options)
+- [`applyIterativelyAsync(script, funcs, options?)`](#applyiterativelyasyncscript-funcs-options)
 - [`logger`](#logger)
 - [`generateCode(rootNode, opts?)`](#generatecoderootnode-opts)
 - [`generateRootNode(inputCode, opts?)`](#generaterootnodeinputcode-opts)
@@ -19,6 +20,7 @@ This guide focuses on flAST's current public API surface and the behaviors that 
 import {
   Arborist,
   applyIteratively,
+  applyIterativelyAsync,
   generateFlatAST,
   logger,
   generateCode,
@@ -219,6 +221,11 @@ Every successful Arborist replacement updates `arb.script`, regardless of rebuil
 #### `getNumberOfChanges()`
 - Returns the number of queued mutations
 
+#### `serialize()` / `Arborist.deserialize(snapshot)`
+- `serialize()` stores `script`, `options`, replacement `[nodeId, replacement]` pairs, and deletion `nodeId`s
+- The AST is omitted; the same script and options rebuild the same `nodeId`s
+- `deserialize` constructs a new Arborist and re-marks those ids
+
 #### `applyChanges()`
 - Applies queued replacements/deletions
 - Groups large sibling batches and ordered adjacent replacement/deletion runs by their parent array
@@ -307,6 +314,18 @@ script = applyIteratively(script, [stageB], {
 
 `currentIteration` is options-only. The numeric shorthand still starts at `0`.
 
+Optional `fn.maxMarkedNodes` (or `{maxMarkedNodes}` on the options object)
+stops that modifier on the mark that would exceed the cap. flAST keeps the
+same Arborist so already-queued marks still apply; the next iteration can
+mark remaining nodes. The function body does not check the count.
+`fn.maxMarkedNodes` wins when both the function and options set a cap.
+`maxRunTimeMs` is ignored here; use `applyIterativelyAsync`.
+
+```js
+foldMath.maxMarkedNodes = 50;
+script = applyIteratively(script, [foldMath]);
+```
+
 The next major release is planned to drop the numeric third argument and
 `currentIteration`. A module-level counter will keep a single sequence
 across calls. `{resetIterationsCounter: true}` will reprint that call from
@@ -329,6 +348,38 @@ when behavior must remain stable across that release.
 - Useful when one transform unlocks another in a later pass
 - Resilient against invalid end states because Arborist validates changes
 - Later transforms can still run even if an earlier one throws
+- `maxMarkedNodes` stops a modifier at the cap without discarding its queue
+
+## `applyIterativelyAsync(script, funcs, options?)`
+Same loop as `applyIteratively`, returning a Promise. When `fn.maxRunTimeMs` is
+set, that invocation runs in a Node `worker_threads` isolate. flAST sends an
+Arborist snapshot, reconstructs the modifier from function source, and mirrors
+`nodeId` marks onto the original Arborist. After the budget, the worker is
+terminated; marks already received still apply.
+
+The mark cap is the same as the sync API (`fn.maxMarkedNodes` or
+`{maxMarkedNodes}`). If both limits are set, whichever hits first stops the
+invocation. Modifiers without `maxRunTimeMs` run in-process.
+
+```js
+function replaceLiterals(arb) {
+  const replacements = {Hello: 'General'};
+  for (const n of arb.ast[0].typeMap.Literal) {
+    if (replacements[n.value]) {
+      arb.replaceNode(n, {type: 'Literal', value: replacements[n.value]});
+    }
+  }
+  return arb;
+}
+replaceLiterals.maxRunTimeMs = 1000;
+replaceLiterals.maxMarkedNodes = 50;
+
+const result = await applyIterativelyAsync(source, [replaceLiterals]);
+```
+
+Put any tables or constants inside the function (or read them from the AST).
+There is no public context bag. In-flight mark messages may be dropped when
+the worker is terminated. Rebuild time is not part of the budget.
 
 ## `logger`
 Simple shared logger used by flAST utilities.

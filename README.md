@@ -336,6 +336,7 @@ numeric third argument is also planned to become options-only.
 - Use `generateCode` if you want code back from an AST node.
 - Use `Arborist` if you want safe deletions/replacements with validation.
 - Use `applyIteratively` if you want a transformation pipeline that can run multiple passes until changes stop.
+- Use `applyIterativelyAsync` if a modifier should stop after `fn.maxRunTimeMs`.
 - Use `logger` if you want to debug or redirect flAST logging.
 
 ## Best Practices
@@ -384,6 +385,7 @@ See the dedicated guide: [docs/structure-detection.md](docs/structure-detection.
 - The next breaking release is expected to make `retainTokens: false` the default; set `retainTokens: true` explicitly if your integration reads `ast[0].tokens`.
 - Preview the planned defaults with `{nextMajorDefaults: true}` or `FLAST_NEXT_MAJOR_DEFAULTS=1`. Explicit options override the preview, and `{nextMajorDefaults: false}` disables the environment flag for one operation.
 - `applyIteratively` accepts `currentIteration` to continue logs and the remaining `maxIterations` budget across calls. The next major version will drop that option and the numeric third argument in favor of a module-level counter, `{resetIterationsCounter: true}`, and `applyIteratively.resetIterationsCounter()`.
+- `fn.maxMarkedNodes` (or `{maxMarkedNodes}`) stops a modifier at that many marks and applies the queue; `applyIterativelyAsync` also honors `fn.maxRunTimeMs` via a Node worker.
 - `Arborist.applyChanges()` validates by regenerating and reparsing code before committing the updated script.
 - Replacing the root node behaves differently from replacing a non-root node; it swaps the entire output program.
 - Comments are preserved where possible during replacements and deletions, but you should still test transforms that move or remove large sections of code.

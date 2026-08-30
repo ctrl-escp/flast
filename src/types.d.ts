@@ -56,9 +56,28 @@ export interface ApplyIterativelyOptions {
   mode?: ApplyIterativelyMode;
   /** Options used to construct the initial Arborist. */
   arboristOptions?: GenerateFlatASTOptions;
+  /** Default mark cap for modifiers that omit `fn.maxMarkedNodes`. */
+  maxMarkedNodes?: number;
   /** Test planned breaking defaults without changing current global defaults. */
   nextMajorDefaults?: boolean;
 }
+
+/** Cloneable Arborist session: script, options, and queued marks as node IDs. */
+export interface ArboristSnapshot {
+  script: string;
+  options?: GenerateFlatASTOptions;
+  replacements?: Array<[number, object]>;
+  markedForDeletion?: number[];
+}
+
+/**
+ * An Arborist modifier. Optional `maxMarkedNodes` / `maxRunTimeMs` are
+ * enforced by applyIteratively; the function body does not check them.
+ */
+export type ArboristModifier = ((arb: Arborist) => Arborist) & {
+  maxMarkedNodes?: number;
+  maxRunTimeMs?: number;
+};
 
 /** Escodegen options accepted by {@link generateCode}. */
 export interface GenerateCodeOptions {
@@ -298,6 +317,10 @@ export class Arborist {
   _getCorrectTargetForDeletion(startNode: ASTNode): ASTNode;
   /** Return the number of queued replacements and deletions. */
   getNumberOfChanges(): number;
+  /** Snapshot script, options, and queued marks as node IDs (no AST). */
+  serialize(): ArboristSnapshot;
+  /** Rebuild a session from {@link serialize} and re-mark stored node IDs. */
+  static deserialize(snapshot: ArboristSnapshot): Arborist;
   /** Queue a replacement when provided, otherwise queue a deletion. */
   markNode(targetNode: ASTNode, replacementNode?: ASTNode | object): void;
   /** Queue a node replacement for the next {@link applyChanges} call. */
@@ -354,12 +377,29 @@ export function mapIdentifierRelations(node: ASTNode, scopeVarMaps: ScopeVariabl
  * a module-level total, `{resetIterationsCounter: true}`, and
  * `applyIteratively.resetIterationsCounter()`.
  *
+ * Optional `fn.maxMarkedNodes` (or `{maxMarkedNodes}`) stops a modifier at the
+ * cap and keeps the same Arborist so queued marks still apply. Use
+ * {@link applyIterativelyAsync} for `fn.maxRunTimeMs`.
+ *
  * @example
  * applyIteratively(source, [removeDeadCode, simplifyExpressions], 20);
  */
-export function applyIteratively(script: string, funcs: Array<(arb: Arborist) => Arborist>, maxIterations?: number): string;
-export function applyIteratively(script: string, funcs: Array<(arb: Arborist) => Arborist>,
+export function applyIteratively(script: string, funcs: ArboristModifier[], maxIterations?: number): string;
+export function applyIteratively(script: string, funcs: ArboristModifier[],
   options?: ApplyIterativelyOptions): string;
+
+/**
+ * Same as {@link applyIteratively}, but `fn.maxRunTimeMs` runs that invocation
+ * in a Node worker. Marks are mirrored onto the original Arborist.
+ *
+ * @example
+ * replaceLiterals.maxRunTimeMs = 1000;
+ * const result = await applyIterativelyAsync(source, [replaceLiterals]);
+ */
+export function applyIterativelyAsync(script: string, funcs: ArboristModifier[],
+  maxIterations?: number): Promise<string>;
+export function applyIterativelyAsync(script: string, funcs: ArboristModifier[],
+  options?: ApplyIterativelyOptions): Promise<string>;
 
 /**
  * Shared opt-in logger. Output is disabled until a level is selected.

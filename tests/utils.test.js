@@ -1,6 +1,6 @@
 import assert from 'node:assert';
 import {describe, it} from 'node:test';
-import {applyIteratively, Arborist, logger} from '../src/index.js';
+import {applyIteratively, applyIterativelyAsync, Arborist, logger} from '../src/index.js';
 describe('Utils tests: applyIteratively', () => {
   it('Verify applyIteratively cannot remove the root node without replacing it', () => {
     const code = 'a';
@@ -324,6 +324,153 @@ describe('Utils tests: applyIteratively', () => {
       logger.setLogFunc(originalLogFunc);
       logger.setLogLevel(originalLogLevel);
     }
+  });
+  it('Stops a modifier at maxMarkedNodes and applies the queued marks', () => {
+    const replaceSmall = function replaceSmall(arb) {
+      for (const n of arb.ast[0].typeMap.Literal) {
+        if (n.value < 10) arb.replaceNode(n, {type: 'Literal', value: n.value * 10, raw: String(n.value * 10)});
+      }
+      return arb;
+    };
+    replaceSmall.maxMarkedNodes = 1;
+
+    assert.equal(
+      applyIteratively('const values = [1, 2, 3];', [replaceSmall], {maxIterations: 1}),
+      'const values = [\n  10,\n  2,\n  3\n];',
+    );
+    assert.equal(
+      applyIteratively('const values = [1, 2, 3];', [replaceSmall], {maxIterations: 3}),
+      'const values = [\n  10,\n  20,\n  30\n];',
+    );
+    assert.equal(
+      applyIteratively('const values = [1, 2, 3];', [replaceSmall], {
+        mode: 'batch',
+        maxIterations: 1,
+      }),
+      'const values = [\n  10,\n  2,\n  3\n];',
+    );
+
+    const uncapped = function uncapped(arb) {
+      return replaceSmall(arb);
+    };
+    assert.equal(
+      applyIteratively('const values = [1, 2, 3];', [uncapped], {maxIterations: 1}),
+      'const values = [\n  10,\n  20,\n  30\n];',
+    );
+
+    const optionCapped = function optionCapped(arb) {
+      return replaceSmall(arb);
+    };
+    assert.equal(
+      applyIteratively('const values = [1, 2, 3];', [optionCapped], {
+        maxMarkedNodes: 1,
+        maxIterations: 1,
+      }),
+      'const values = [\n  10,\n  2,\n  3\n];',
+    );
+
+    const override = function override(arb) {
+      return replaceSmall(arb);
+    };
+    override.maxMarkedNodes = 2;
+    assert.equal(
+      applyIteratively('const values = [1, 2, 3];', [override], {
+        maxMarkedNodes: 1,
+        maxIterations: 1,
+      }),
+      'const values = [\n  10,\n  20,\n  3\n];',
+    );
+
+    const timed = function timed(arb) {
+      return replaceSmall(arb);
+    };
+    timed.maxRunTimeMs = 1;
+    assert.equal(
+      applyIteratively('const values = [1, 2, 3];', [timed], {maxIterations: 1}),
+      'const values = [\n  10,\n  20,\n  30\n];',
+    );
+
+    assert.throws(
+      () => applyIteratively('value;', [replaceSmall], {maxMarkedNodes: -1}),
+      /maxMarkedNodes must be a positive safe integer/,
+    );
+    assert.throws(
+      () => applyIteratively('value;', [replaceSmall], {maxMarkedNodes: 0}),
+      /maxMarkedNodes must be a positive safe integer/,
+    );
+    assert.throws(
+      () => applyIteratively('value;', [replaceSmall], {maxMarkedNodes: 1.5}),
+      /maxMarkedNodes must be a positive safe integer/,
+    );
+    const invalidFn = function invalidFn(arb) {
+      return arb;
+    };
+    invalidFn.maxMarkedNodes = -1;
+    assert.throws(
+      () => applyIteratively('value;', [invalidFn]),
+      /maxMarkedNodes must be a positive safe integer/,
+    );
+  });
+  it('applyIterativelyAsync honors maxMarkedNodes and worker timeouts', async () => {
+    const replaceSmall = function replaceSmall(arb) {
+      for (const n of arb.ast[0].typeMap.Literal) {
+        if (n.value < 10) arb.replaceNode(n, {type: 'Literal', value: n.value * 10, raw: String(n.value * 10)});
+      }
+      return arb;
+    };
+    replaceSmall.maxMarkedNodes = 1;
+    assert.equal(
+      await applyIterativelyAsync('const values = [1, 2, 3];', [replaceSmall], {maxIterations: 1}),
+      'const values = [\n  10,\n  2,\n  3\n];',
+    );
+
+    const optionCapped = function optionCapped(arb) {
+      return replaceSmall(arb);
+    };
+    assert.equal(
+      await applyIterativelyAsync('const values = [1, 2, 3];', [optionCapped], {
+        maxMarkedNodes: 1,
+        maxIterations: 1,
+      }),
+      'const values = [\n  10,\n  2,\n  3\n];',
+    );
+
+    const markThenSpin = function markThenSpin(arb) {
+      const first = arb.ast.find(node => node.type === 'Literal' && node.value === 1);
+      if (first) arb.replaceNode(first, {type: 'Literal', value: 9, raw: '9'});
+      const stop = Date.now() + 400;
+      while (Date.now() < stop) { /* hold the worker until terminate() */ }
+      const second = arb.ast.find(node => node.type === 'Literal' && node.value === 2);
+      if (second) arb.replaceNode(second, {type: 'Literal', value: 8, raw: '8'});
+      return arb;
+    };
+    markThenSpin.maxRunTimeMs = 250;
+    assert.equal(
+      await applyIterativelyAsync('const a = 1, b = 2;', [markThenSpin], {maxIterations: 1}),
+      'const a = 9, b = 2;',
+    );
+
+    const bothLimits = function bothLimits(arb) {
+      for (const n of arb.ast[0].typeMap.Literal) {
+        if (n.value < 10) arb.replaceNode(n, {type: 'Literal', value: n.value * 10, raw: String(n.value * 10)});
+      }
+      return arb;
+    };
+    bothLimits.maxRunTimeMs = 5000;
+    bothLimits.maxMarkedNodes = 1;
+    assert.equal(
+      await applyIterativelyAsync('const values = [1, 2, 3];', [bothLimits], {maxIterations: 1}),
+      'const values = [\n  10,\n  2,\n  3\n];',
+    );
+
+    const invalidTime = function invalidTime(arb) {
+      return arb;
+    };
+    invalidTime.maxRunTimeMs = 0;
+    await assert.rejects(
+      () => applyIterativelyAsync('value;', [invalidTime]),
+      /maxRunTimeMs must be a positive safe integer/,
+    );
   });
 });
 describe('Utils tests: logger', () => {
