@@ -322,13 +322,23 @@ an earlier transform. Sequential remains the default in this major version;
 the next major is planned to default iterative work to batched compact scopes
 without retained tokens.
 
+Pass `currentIteration` when calling `applyIteratively` more than once and the
+logs should continue from the last completed count. That value is also the
+shared `maxIterations` budget. The next major version will replace this with a
+module-level counter, `{resetIterationsCounter: true}` to reprint a call from
+`0`, and `applyIteratively.resetIterationsCounter()` to zero the total. The
+numeric third argument is also planned to become options-only.
+
 ## Which API Should I Use?
 - Use `parseCode` if you want the parser root as produced by Espree.
 - Use `generateRootNode` if you want a root node and are okay with `null` for invalid input.
 - Use `generateFlatAST` if you want the main flAST workflow: flattened nodes plus metadata.
 - Use `generateCode` if you want code back from an AST node.
 - Use `Arborist` if you want safe deletions/replacements with validation.
+- Use `applyChangesSafely` if a modifier may queue some invalid edits and the valid ones should still apply.
 - Use `applyIteratively` if you want a transformation pipeline that can run multiple passes until changes stop.
+- Use `applyIterativelySafely` / `applyIterativelyAsyncSafely` for the same pipelines when a mixed queue should keep every valid edit.
+- Use `applyIterativelyAsync` if a modifier should stop after `fn.maxRunTimeMs`.
 - Use `logger` if you want to debug or redirect flAST logging.
 
 ## Best Practices
@@ -376,6 +386,8 @@ See the dedicated guide: [docs/structure-detection.md](docs/structure-detection.
 - `compactScopes: true` releases undocumented `eslint-scope` internals after projecting the documented scope and identifier relationships.
 - The next breaking release is expected to make `retainTokens: false` the default; set `retainTokens: true` explicitly if your integration reads `ast[0].tokens`.
 - Preview the planned defaults with `{nextMajorDefaults: true}` or `FLAST_NEXT_MAJOR_DEFAULTS=1`. Explicit options override the preview, and `{nextMajorDefaults: false}` disables the environment flag for one operation.
+- `applyIteratively` accepts `currentIteration` to continue logs and the remaining `maxIterations` budget across calls. The next major version will drop that option and the numeric third argument in favor of a module-level counter, `{resetIterationsCounter: true}`, and `applyIteratively.resetIterationsCounter()`.
+- `fn.maxMarkedNodes` (or `{maxMarkedNodes}`) stops a modifier at that many marks and applies the queue; `applyIterativelyAsync` also honors `fn.maxRunTimeMs` via a Node worker.
 - `Arborist.applyChanges()` validates by regenerating and reparsing code before committing the updated script.
 - Replacing the root node behaves differently from replacing a non-root node; it swaps the entire output program.
 - Comments are preserved where possible during replacements and deletions, but you should still test transforms that move or remove large sections of code.

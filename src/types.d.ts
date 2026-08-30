@@ -46,13 +46,38 @@ export type ApplyIterativelyMode = 'batch' | 'sequential';
 export interface ApplyIterativelyOptions {
   /** Maximum complete modifier passes. @default 500 */
   maxIterations?: number;
+  /**
+   * Zero-based completed-iteration offset for logs and the remaining
+   * `maxIterations` budget. The next major version replaces this with a
+   * module-level counter; see `applyIteratively` docs.
+   */
+  currentIteration?: number;
   /** Rebuild once per modifier or once per complete pass. @default 'sequential' */
   mode?: ApplyIterativelyMode;
   /** Options used to construct the initial Arborist. */
   arboristOptions?: GenerateFlatASTOptions;
+  /** Default mark cap for modifiers that omit `fn.maxMarkedNodes`. */
+  maxMarkedNodes?: number;
   /** Test planned breaking defaults without changing current global defaults. */
   nextMajorDefaults?: boolean;
 }
+
+/** Cloneable Arborist session: script, options, and queued marks as node IDs. */
+export interface ArboristSnapshot {
+  script: string;
+  options?: GenerateFlatASTOptions;
+  replacements?: Array<[number, object]>;
+  markedForDeletion?: number[];
+}
+
+/**
+ * An Arborist modifier. Optional `maxMarkedNodes` / `maxRunTimeMs` are
+ * enforced by applyIteratively; the function body does not check them.
+ */
+export type ArboristModifier = ((arb: Arborist) => Arborist) & {
+  maxMarkedNodes?: number;
+  maxRunTimeMs?: number;
+};
 
 /** Escodegen options accepted by {@link generateCode}. */
 export interface GenerateCodeOptions {
@@ -292,6 +317,10 @@ export class Arborist {
   _getCorrectTargetForDeletion(startNode: ASTNode): ASTNode;
   /** Return the number of queued replacements and deletions. */
   getNumberOfChanges(): number;
+  /** Snapshot script, options, and queued marks as node IDs (no AST). */
+  serialize(): ArboristSnapshot;
+  /** Rebuild a session from {@link serialize} and re-mark stored node IDs. */
+  static deserialize(snapshot: ArboristSnapshot): Arborist;
   /** Queue a replacement when provided, otherwise queue a deletion. */
   markNode(targetNode: ASTNode, replacementNode?: ASTNode | object): void;
   /** Queue a node replacement for the next {@link applyChanges} call. */
@@ -343,12 +372,107 @@ export function mapIdentifierRelations(node: ASTNode, scopeVarMaps: ScopeVariabl
 /**
  * Run Arborist modifiers until a complete pass stops changing the source.
  *
+ * `currentIteration` seeds the shared log/budget counter. The next major
+ * version drops the numeric third argument and `currentIteration` in favor of
+ * a module-level total, `{resetIterationsCounter: true}`, and
+ * `applyIteratively.resetIterationsCounter()`.
+ *
+ * Optional `fn.maxMarkedNodes` (or `{maxMarkedNodes}`) stops a modifier at the
+ * cap and keeps the same Arborist so queued marks still apply. Use
+ * {@link applyIterativelyAsync} for `fn.maxRunTimeMs`.
+ *
  * @example
  * applyIteratively(source, [removeDeadCode, simplifyExpressions], 20);
  */
-export function applyIteratively(script: string, funcs: Array<(arb: Arborist) => Arborist>, maxIterations?: number): string;
-export function applyIteratively(script: string, funcs: Array<(arb: Arborist) => Arborist>,
+export function applyIteratively(script: string, funcs: ArboristModifier[], maxIterations?: number): string;
+export function applyIteratively(script: string, funcs: ArboristModifier[],
   options?: ApplyIterativelyOptions): string;
+
+/**
+ * Same as {@link applyIteratively}, but `fn.maxRunTimeMs` runs that invocation
+ * in a Node worker. Marks are mirrored onto the original Arborist.
+ *
+ * @example
+ * replaceLiterals.maxRunTimeMs = 1000;
+ * const result = await applyIterativelyAsync(source, [replaceLiterals]);
+ */
+export function applyIterativelyAsync(script: string, funcs: ArboristModifier[],
+  maxIterations?: number): Promise<string>;
+export function applyIterativelyAsync(script: string, funcs: ArboristModifier[],
+  options?: ApplyIterativelyOptions): Promise<string>;
+
+/**
+ * A queued edit that {@link applyChangesSafely} could not keep.
+ *
+ * `target` is the pre-apply node. After a rebuild those objects are no longer
+ * in `arborist.ast`. `modifier` and `iteration` are set only by the iterative
+ * safely wrappers (`iteration` is the one-based pass number).
+ */
+export interface RejectedChange {
+  type: 'replace' | 'delete';
+  nodeId: number;
+  target: ASTNode;
+  replacement?: ASTNode | object;
+  error?: string;
+  modifier?: string;
+  iteration?: number;
+}
+
+/** Result of {@link applyChangesSafely}. */
+export interface ApplyChangesSafelyResult {
+  /** The same Arborist instance passed in, with valid edits applied. */
+  arborist: Arborist;
+  /** Count returned by the successful `applyChanges()` commit. */
+  applied: number;
+  /** Edits that failed isolation or were skipped by a root replacement. */
+  rejected: RejectedChange[];
+}
+
+/** Result of {@link applyIterativelySafely} and {@link applyIterativelyAsyncSafely}. */
+export interface ApplyIterativelySafelyResult {
+  /** Source after every valid commit in the run. */
+  script: string;
+  /** Concatenated rejected edits from every safe commit. */
+  rejected: RejectedChange[];
+}
+
+/**
+ * Apply every queued edit that still produces valid source.
+ *
+ * Use this instead of {@link Arborist.applyChanges} when a modifier may queue
+ * some invalid replacements or deletions and the valid ones should still be
+ * kept. Isolation trials use `serialize` / `deserialize` against the original
+ * script; the input instance is updated only for the final accepted commit.
+ *
+ * @example
+ * const {arborist, applied, rejected} = applyChangesSafely(arb);
+ */
+export function applyChangesSafely(arborist: Arborist): ApplyChangesSafelyResult;
+
+/**
+ * Same loop as {@link applyIteratively}, but each sequential (or batch)
+ * commit uses {@link applyChangesSafely}.
+ *
+ * @example
+ * const {script, rejected} = applyIterativelySafely(source, [foldMath, rename]);
+ */
+export function applyIterativelySafely(script: string, funcs: ArboristModifier[],
+  maxIterations?: number): ApplyIterativelySafelyResult;
+export function applyIterativelySafely(script: string, funcs: ArboristModifier[],
+  options?: ApplyIterativelyOptions): ApplyIterativelySafelyResult;
+
+/**
+ * Same loop as {@link applyIterativelyAsync}, committing with
+ * {@link applyChangesSafely}. Worker timeouts still apply mirrored marks;
+ * isolation runs on the main thread.
+ *
+ * @example
+ * const {script, rejected} = await applyIterativelyAsyncSafely(source, [timed]);
+ */
+export function applyIterativelyAsyncSafely(script: string, funcs: ArboristModifier[],
+  maxIterations?: number): Promise<ApplyIterativelySafelyResult>;
+export function applyIterativelyAsyncSafely(script: string, funcs: ArboristModifier[],
+  options?: ApplyIterativelyOptions): Promise<ApplyIterativelySafelyResult>;
 
 /**
  * Shared opt-in logger. Output is disabled until a level is selected.

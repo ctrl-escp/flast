@@ -1,6 +1,14 @@
 import assert from 'node:assert';
 import {describe, it} from 'node:test';
-import {applyIteratively, Arborist, logger} from '../src/index.js';
+import {
+  applyChangesSafely,
+  applyIteratively,
+  applyIterativelyAsync,
+  applyIterativelyAsyncSafely,
+  applyIterativelySafely,
+  Arborist,
+  logger,
+} from '../src/index.js';
 describe('Utils tests: applyIteratively', () => {
   it('Verify applyIteratively cannot remove the root node without replacing it', () => {
     const code = 'a';
@@ -265,6 +273,423 @@ describe('Utils tests: applyIteratively', () => {
     assert.equal(applyIteratively('let value = 0;', [increment], {mode: 'batch', maxIterations: 3}),
       'let value = 3;');
     assert.equal(calls, 3);
+  });
+  it('Seeds the iteration counter from currentIteration', () => {
+    const originalLogFunc = logger.logFunc;
+    const originalLogLevel = logger.currentLogLevel;
+    const increment = function increment(arb) {
+      const target = arb.ast.find(node => node.type === 'Literal');
+      const value = target.value + 1;
+      arb.replaceNode(target, {type: 'Literal', value, raw: String(value)});
+      return arb;
+    };
+    const iterationNumbers = messages => messages
+      .filter(message => typeof message === 'string' && message.includes('Iteration #'))
+      .map(message => Number(message.match(/Iteration #(\d+)/)[1]));
+
+    try {
+      const defaultLogs = [];
+      logger.setLogFunc((...args) => defaultLogs.push(...args));
+      logger.setLogLevelLog();
+      applyIteratively('let value = 0;', [increment], {maxIterations: 1});
+      assert.deepEqual(iterationNumbers(defaultLogs), [1]);
+
+      const zeroLogs = [];
+      logger.setLogFunc((...args) => zeroLogs.push(...args));
+      applyIteratively('let value = 0;', [increment], {currentIteration: 0, maxIterations: 1});
+      assert.deepEqual(iterationNumbers(zeroLogs), [1]);
+
+      let calls = 0;
+      const countingIncrement = function countingIncrement(arb) {
+        calls++;
+        return increment(arb);
+      };
+      const continuedLogs = [];
+      logger.setLogFunc((...args) => continuedLogs.push(...args));
+      assert.equal(applyIteratively('let value = 0;', [countingIncrement], {
+        currentIteration: 7,
+        maxIterations: 10,
+      }), 'let value = 3;');
+      assert.equal(calls, 3);
+      assert.deepEqual(iterationNumbers(continuedLogs), [8, 9, 10]);
+
+      calls = 0;
+      assert.equal(applyIteratively('let value = 0;', [countingIncrement], {
+        currentIteration: 10,
+        maxIterations: 10,
+      }), 'let value = 0;');
+      assert.equal(calls, 0);
+
+      assert.throws(
+        () => applyIteratively('value;', [increment], {currentIteration: -1}),
+        /currentIteration must be a non-negative safe integer/,
+      );
+      assert.throws(
+        () => applyIteratively('value;', [increment], {currentIteration: 1.5}),
+        /currentIteration must be a non-negative safe integer/,
+      );
+    } finally {
+      logger.setLogFunc(originalLogFunc);
+      logger.setLogLevel(originalLogLevel);
+    }
+  });
+  it('Stops a modifier at maxMarkedNodes and applies the queued marks', () => {
+    const replaceSmall = function replaceSmall(arb) {
+      for (const n of arb.ast[0].typeMap.Literal) {
+        if (n.value < 10) arb.replaceNode(n, {type: 'Literal', value: n.value * 10, raw: String(n.value * 10)});
+      }
+      return arb;
+    };
+    replaceSmall.maxMarkedNodes = 1;
+
+    assert.equal(
+      applyIteratively('const values = [1, 2, 3];', [replaceSmall], {maxIterations: 1}),
+      'const values = [\n  10,\n  2,\n  3\n];',
+    );
+    assert.equal(
+      applyIteratively('const values = [1, 2, 3];', [replaceSmall], {maxIterations: 3}),
+      'const values = [\n  10,\n  20,\n  30\n];',
+    );
+    assert.equal(
+      applyIteratively('const values = [1, 2, 3];', [replaceSmall], {
+        mode: 'batch',
+        maxIterations: 1,
+      }),
+      'const values = [\n  10,\n  2,\n  3\n];',
+    );
+
+    const uncapped = function uncapped(arb) {
+      return replaceSmall(arb);
+    };
+    assert.equal(
+      applyIteratively('const values = [1, 2, 3];', [uncapped], {maxIterations: 1}),
+      'const values = [\n  10,\n  20,\n  30\n];',
+    );
+
+    const optionCapped = function optionCapped(arb) {
+      return replaceSmall(arb);
+    };
+    assert.equal(
+      applyIteratively('const values = [1, 2, 3];', [optionCapped], {
+        maxMarkedNodes: 1,
+        maxIterations: 1,
+      }),
+      'const values = [\n  10,\n  2,\n  3\n];',
+    );
+
+    const override = function override(arb) {
+      return replaceSmall(arb);
+    };
+    override.maxMarkedNodes = 2;
+    assert.equal(
+      applyIteratively('const values = [1, 2, 3];', [override], {
+        maxMarkedNodes: 1,
+        maxIterations: 1,
+      }),
+      'const values = [\n  10,\n  20,\n  3\n];',
+    );
+
+    const timed = function timed(arb) {
+      return replaceSmall(arb);
+    };
+    timed.maxRunTimeMs = 1;
+    assert.equal(
+      applyIteratively('const values = [1, 2, 3];', [timed], {maxIterations: 1}),
+      'const values = [\n  10,\n  20,\n  30\n];',
+    );
+
+    assert.throws(
+      () => applyIteratively('value;', [replaceSmall], {maxMarkedNodes: -1}),
+      /maxMarkedNodes must be a positive safe integer/,
+    );
+    assert.throws(
+      () => applyIteratively('value;', [replaceSmall], {maxMarkedNodes: 0}),
+      /maxMarkedNodes must be a positive safe integer/,
+    );
+    assert.throws(
+      () => applyIteratively('value;', [replaceSmall], {maxMarkedNodes: 1.5}),
+      /maxMarkedNodes must be a positive safe integer/,
+    );
+    const invalidFn = function invalidFn(arb) {
+      return arb;
+    };
+    invalidFn.maxMarkedNodes = -1;
+    assert.throws(
+      () => applyIteratively('value;', [invalidFn]),
+      /maxMarkedNodes must be a positive safe integer/,
+    );
+  });
+  it('applyIterativelyAsync honors maxMarkedNodes and worker timeouts', async () => {
+    const replaceSmall = function replaceSmall(arb) {
+      for (const n of arb.ast[0].typeMap.Literal) {
+        if (n.value < 10) arb.replaceNode(n, {type: 'Literal', value: n.value * 10, raw: String(n.value * 10)});
+      }
+      return arb;
+    };
+    replaceSmall.maxMarkedNodes = 1;
+    assert.equal(
+      await applyIterativelyAsync('const values = [1, 2, 3];', [replaceSmall], {maxIterations: 1}),
+      'const values = [\n  10,\n  2,\n  3\n];',
+    );
+
+    const optionCapped = function optionCapped(arb) {
+      return replaceSmall(arb);
+    };
+    assert.equal(
+      await applyIterativelyAsync('const values = [1, 2, 3];', [optionCapped], {
+        maxMarkedNodes: 1,
+        maxIterations: 1,
+      }),
+      'const values = [\n  10,\n  2,\n  3\n];',
+    );
+
+    const markThenSpin = function markThenSpin(arb) {
+      const first = arb.ast.find(node => node.type === 'Literal' && node.value === 1);
+      if (first) arb.replaceNode(first, {type: 'Literal', value: 9, raw: '9'});
+      const stop = Date.now() + 400;
+      while (Date.now() < stop) { /* hold the worker until terminate() */ }
+      const second = arb.ast.find(node => node.type === 'Literal' && node.value === 2);
+      if (second) arb.replaceNode(second, {type: 'Literal', value: 8, raw: '8'});
+      return arb;
+    };
+    markThenSpin.maxRunTimeMs = 250;
+    assert.equal(
+      await applyIterativelyAsync('const a = 1, b = 2;', [markThenSpin], {maxIterations: 1}),
+      'const a = 9, b = 2;',
+    );
+
+    const bothLimits = function bothLimits(arb) {
+      for (const n of arb.ast[0].typeMap.Literal) {
+        if (n.value < 10) arb.replaceNode(n, {type: 'Literal', value: n.value * 10, raw: String(n.value * 10)});
+      }
+      return arb;
+    };
+    bothLimits.maxRunTimeMs = 5000;
+    bothLimits.maxMarkedNodes = 1;
+    assert.equal(
+      await applyIterativelyAsync('const values = [1, 2, 3];', [bothLimits], {maxIterations: 1}),
+      'const values = [\n  10,\n  2,\n  3\n];',
+    );
+
+    const invalidTime = function invalidTime(arb) {
+      return arb;
+    };
+    invalidTime.maxRunTimeMs = 0;
+    await assert.rejects(
+      () => applyIterativelyAsync('value;', [invalidTime]),
+      /maxRunTimeMs must be a positive safe integer/,
+    );
+  });
+});
+describe('Utils tests: applyChangesSafely', () => {
+  it('Applies an all-valid queue like applyChanges and preserves identity', () => {
+    const code = 'const a = 1, b = 2;';
+    const arborist = new Arborist(code);
+    const literals = arborist.ast[0].typeMap.Literal;
+    arborist.replaceNode(literals[0], {type: 'Literal', value: 10, raw: '10'});
+    arborist.replaceNode(literals[1], {type: 'Literal', value: 20, raw: '20'});
+
+    const result = applyChangesSafely(arborist);
+
+    assert.equal(result.arborist, arborist);
+    assert.equal(result.applied, 2);
+    assert.deepEqual(result.rejected, []);
+    assert.equal(arborist.script, 'const a = 10, b = 20;');
+    assert.equal(arborist.getNumberOfChanges(), 0);
+  });
+
+  it('Keeps valid edits when one replacement is invalid', () => {
+    const arborist = new Arborist('const a = 1, b = 2, c = 3;');
+    const literals = arborist.ast[0].typeMap.Literal;
+    arborist.replaceNode(literals[0], {type: 'Literal', value: 10, raw: '10'});
+    arborist.replaceNode(literals[1], {type: 'EmptyStatement'});
+    arborist.replaceNode(literals[2], {type: 'Literal', value: 30, raw: '30'});
+
+    const {applied, rejected} = applyChangesSafely(arborist);
+
+    assert.equal(applied, 2);
+    assert.equal(arborist.script, 'const a = 10, b = 2, c = 30;');
+    assert.equal(rejected.length, 1);
+    assert.equal(rejected[0].type, 'replace');
+    assert.equal(rejected[0].nodeId, literals[1].nodeId);
+    assert.equal(rejected[0].replacement.type, 'EmptyStatement');
+    assert.ok(rejected[0].error);
+    assert.equal(rejected[0].target.type, 'Literal');
+  });
+
+  it('Rejects several independent invalid edits and applies the rest', () => {
+    const arborist = new Arborist('const a = 1, b = 2, c = 3;');
+    const literals = arborist.ast[0].typeMap.Literal;
+    arborist.replaceNode(literals[0], {type: 'EmptyStatement'});
+    arborist.replaceNode(literals[1], {type: 'Literal', value: 20, raw: '20'});
+    arborist.replaceNode(literals[2], {type: 'EmptyStatement'});
+
+    const {applied, rejected} = applyChangesSafely(arborist);
+
+    assert.equal(applied, 1);
+    assert.equal(arborist.script, 'const a = 1, b = 20, c = 3;');
+    assert.equal(rejected.length, 2);
+    assert.ok(rejected.every(item => item.replacement.type === 'EmptyStatement'));
+  });
+
+  it('Keeps one of two edits that are valid alone but invalid together', () => {
+    const code = 'try { a(); } catch (e) { b(); } finally { c(); }';
+    const arborist = new Arborist(code);
+    const tryStatement = arborist.ast.find(node => node.type === 'TryStatement');
+    arborist.deleteNode(tryStatement.handler);
+    arborist.deleteNode(tryStatement.finalizer);
+
+    const {applied, rejected} = applyChangesSafely(arborist);
+
+    assert.equal(applied, 1);
+    assert.equal(rejected.length, 1);
+    assert.equal(rejected[0].type, 'delete');
+    assert.match(rejected[0].error, /interact/i);
+    assert.match(arborist.script, /try \{/);
+    assert.ok(
+      arborist.script.includes('finally') || arborist.script.includes('catch'),
+      'Exactly one of catch or finally should remain',
+    );
+    assert.ok(
+      !(arborist.script.includes('finally') && arborist.script.includes('catch')),
+      'Keeping both catch and finally would not exercise the interaction path',
+    );
+  });
+
+  it('Treats a root replacement as exclusive', () => {
+    const arborist = new Arborist('a;b;');
+    arborist.replaceNode(arborist.ast[4], {type: 'Identifier', name: 'v'});
+    arborist.replaceNode(arborist.ast[0], {type: 'Identifier', name: 'c'});
+
+    const {applied, rejected} = applyChangesSafely(arborist);
+
+    assert.equal(applied, 1);
+    assert.equal(arborist.script, 'c');
+    assert.equal(rejected.length, 1);
+    assert.equal(rejected[0].nodeId, 4);
+    assert.match(rejected[0].error, /root replacement/i);
+  });
+
+  it('Returns an empty rejected list for an empty queue', () => {
+    const arborist = new Arborist('const value = 1;');
+    const script = arborist.script;
+    const ast = arborist.ast;
+
+    const result = applyChangesSafely(arborist);
+
+    assert.equal(result.arborist, arborist);
+    assert.equal(result.applied, 0);
+    assert.deepEqual(result.rejected, []);
+    assert.equal(arborist.script, script);
+    assert.equal(arborist.ast, ast);
+  });
+
+  it('Isolates invalid edits in script-mode source', () => {
+    const arborist = new Arborist('with (target) { value = 1; }');
+    const literal = arborist.ast.find(node => node.type === 'Literal');
+    const target = arborist.ast.find(node => node.type === 'Identifier' && node.name === 'target');
+    arborist.replaceNode(literal, {type: 'Literal', value: 2, raw: '2'});
+    arborist.replaceNode(target, {type: 'EmptyStatement'});
+
+    const {applied, rejected} = applyChangesSafely(arborist);
+
+    assert.equal(applied, 1);
+    assert.equal(arborist.ast[0].sourceType, 'script');
+    assert.match(arborist.script, /value = 2/);
+    assert.equal(rejected.length, 1);
+    assert.equal(rejected[0].replacement.type, 'EmptyStatement');
+  });
+});
+describe('Utils tests: applyIterativelySafely', () => {
+  it('Keeps valid sequential marks and continues to the next modifier', () => {
+    const mixed = function mixed(arb) {
+      const literals = arb.ast[0].typeMap.Literal;
+      arb.replaceNode(literals.find(node => node.value === 1), {type: 'Literal', value: 10, raw: '10'});
+      arb.replaceNode(literals.find(node => node.value === 2), {type: 'EmptyStatement'});
+      return arb;
+    };
+    const later = function later(arb) {
+      const ten = arb.ast[0].typeMap.Literal.find(node => node.value === 10);
+      if (ten) arb.replaceNode(ten, {type: 'Literal', value: 11, raw: '11'});
+      return arb;
+    };
+
+    const {script, rejected} = applyIterativelySafely('const a = 1, b = 2;', [mixed, later]);
+
+    assert.equal(script, 'const a = 11, b = 2;');
+    assert.equal(rejected.length, 1);
+    assert.equal(rejected[0].modifier, 'mixed');
+    assert.equal(rejected[0].iteration, 1);
+    assert.equal(rejected[0].replacement.type, 'EmptyStatement');
+  });
+
+  it('Isolates the combined batch queue at the end of a pass', () => {
+    const replaceValid = function replaceValid(arb) {
+      const one = arb.ast[0].typeMap.Literal.find(node => node.value === 1);
+      if (one) arb.replaceNode(one, {type: 'Literal', value: 10, raw: '10'});
+      return arb;
+    };
+    const replaceInvalid = function replaceInvalid(arb) {
+      const two = arb.ast[0].typeMap.Literal.find(node => node.value === 2);
+      if (two) arb.replaceNode(two, {type: 'EmptyStatement'});
+      return arb;
+    };
+
+    const {script, rejected} = applyIterativelySafely('const a = 1, b = 2;', [replaceValid, replaceInvalid], {
+      mode: 'batch',
+      maxIterations: 1,
+    });
+
+    assert.equal(script, 'const a = 10, b = 2;');
+    assert.equal(rejected.length, 1);
+    assert.equal(rejected[0].iteration, 1);
+    assert.equal(rejected[0].modifier, undefined);
+    assert.equal(rejected[0].replacement.type, 'EmptyStatement');
+  });
+
+  it('Leaves source unchanged and stops when every edit is rejected', () => {
+    const invalidOnly = function invalidOnly(arb) {
+      for (const literal of arb.ast[0].typeMap.Literal) {
+        arb.replaceNode(literal, {type: 'EmptyStatement'});
+      }
+      return arb;
+    };
+    let passes = 0;
+    const countingInvalid = function countingInvalid(arb) {
+      passes++;
+      return invalidOnly(arb);
+    };
+
+    const {script, rejected} = applyIterativelySafely('const a = 1, b = 2;', [countingInvalid], 5);
+
+    assert.equal(script, 'const a = 1, b = 2;');
+    assert.equal(passes, 1, 'An unchanged pass should stop iteration');
+    assert.ok(rejected.length >= 1);
+  });
+});
+describe('Utils tests: applyIterativelyAsyncSafely', () => {
+  it('Applies mirrored worker marks then isolates the queue', async () => {
+    const markMixedThenSpin = function markMixedThenSpin(arb) {
+      const first = arb.ast.find(node => node.type === 'Literal' && node.value === 1);
+      if (first) arb.replaceNode(first, {type: 'Literal', value: 9, raw: '9'});
+      const second = arb.ast.find(node => node.type === 'Literal' && node.value === 2);
+      if (second) arb.replaceNode(second, {type: 'EmptyStatement'});
+      const stop = Date.now() + 400;
+      while (Date.now() < stop) { /* hold the worker until terminate() */ }
+      return arb;
+    };
+    markMixedThenSpin.maxRunTimeMs = 250;
+
+    const {script, rejected} = await applyIterativelyAsyncSafely(
+      'const a = 1, b = 2;',
+      [markMixedThenSpin],
+      {maxIterations: 1},
+    );
+
+    assert.equal(script, 'const a = 9, b = 2;');
+    assert.equal(rejected.length, 1);
+    assert.equal(rejected[0].replacement.type, 'EmptyStatement');
+    assert.equal(rejected[0].modifier, 'markMixedThenSpin');
   });
 });
 describe('Utils tests: logger', () => {

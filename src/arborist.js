@@ -856,6 +856,22 @@ function hasFullDetailedScopes(ast) {
  * arborist.applyChanges();
  * arborist.script; // 'const answer = 42;'
  */
+/**
+ * Thrown when an armed modifier mark cap is reached.
+ *
+ * applyIteratively treats this as an early stop, not a modifier failure.
+ */
+export class ModifierRunLimitError extends Error {
+  /**
+   * @param {string} [limitName='maxMarkedNodes'] Limit that stopped the modifier.
+   */
+  constructor(limitName = 'maxMarkedNodes') {
+    super(`Modifier stopped after reaching ${limitName}.`);
+    this.name = 'ModifierRunLimitError';
+    this.limitName = limitName;
+  }
+}
+
 export class Arborist {
   /**
    * Create a mutation queue from source or an existing flat AST.
@@ -941,6 +957,57 @@ export class Arborist {
   }
 
   /**
+   * Snapshot script, options, and queued marks as node IDs. The AST is omitted
+   * because the same script and options rebuild the same node IDs.
+   *
+   * @example
+   * const snapshot = arborist.serialize();
+   * const restored = Arborist.deserialize(snapshot);
+   * restored.script === arborist.script;
+   *
+   * @return {{script: string, options: object, replacements: Array<[number, object]>, markedForDeletion: number[]}}
+   *   Cloneable session state.
+   */
+  serialize() {
+    return {
+      script: this.script,
+      options: {...this.options},
+      replacements: this.replacements.map(([node, replacement]) => [node.nodeId, replacement]),
+      markedForDeletion: [...this.markedForDeletion],
+    };
+  }
+
+  /**
+   * Rebuild an Arborist from {@link serialize} by parsing the script and
+   * re-marking the stored node IDs.
+   *
+   * @example
+   * Arborist.deserialize(arborist.serialize()).getNumberOfChanges();
+   *
+   * @param {{script: string, options?: object, replacements?: Array<[number, object]>, markedForDeletion?: number[]}} snapshot
+   *   Payload produced by {@link serialize}.
+   * @return {Arborist} New session with the same script and queued marks.
+   */
+  static deserialize(snapshot) {
+    if (!snapshot || typeof snapshot.script !== 'string') {
+      throw new TypeError('Arborist snapshot must include a script string.');
+    }
+    const arborist = new Arborist(snapshot.script, snapshot.options || {});
+    const replacements = snapshot.replacements || [];
+    for (let i = 0; i < replacements.length; i++) {
+      const [nodeId, replacement] = replacements[i];
+      const node = arborist.ast[nodeId];
+      if (node) arborist.markNode(node, replacement);
+    }
+    const deletions = snapshot.markedForDeletion || [];
+    for (let i = 0; i < deletions.length; i++) {
+      const node = arborist.ast[deletions[i]];
+      if (node) arborist.markNode(node);
+    }
+    return arborist;
+  }
+
+  /**
 	 * Queue a replacement when replacementNode exists, otherwise queue a deletion.
    *
    * A node is ignored when it or one of its ancestors is already marked,
@@ -960,17 +1027,31 @@ export class Arborist {
       if (currentNode.isMarked) return;
       currentNode = currentNode.parentNode;
     }
+    if (this._maxMarkedNodes !== undefined) {
+      if (this._markedNodesCount >= this._maxMarkedNodes) {
+        throw new ModifierRunLimitError('maxMarkedNodes');
+      }
+    }
     if (replacementNode) {  // Mark for replacement
       this.replacements.push([targetNode, replacementNode]);
       targetNode.isMarked = true;
+      if (this._maxMarkedNodes !== undefined) this._markedNodesCount++;
+      if (typeof this._onMark === 'function') this._onMark(targetNode.nodeId, replacementNode);
     } else {                // Mark for deletion
       targetNode = this._getCorrectTargetForDeletion(targetNode);
       if (!targetNode.parentNode) return;
       if (targetNode.isEmpty) this.markNode(targetNode, {type: 'EmptyStatement'});
       else if (!targetNode.isMarked) {
+        if (this._maxMarkedNodes !== undefined) {
+          if (this._markedNodesCount >= this._maxMarkedNodes) {
+            throw new ModifierRunLimitError('maxMarkedNodes');
+          }
+          this._markedNodesCount++;
+        }
         this.markedForDeletion.push(targetNode.nodeId);
         targetNode.isMarked = true;
         targetNode.isMarkedForDeletion = true;
+        if (typeof this._onMark === 'function') this._onMark(targetNode.nodeId);
       }
     }
   }
