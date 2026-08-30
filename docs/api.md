@@ -291,6 +291,28 @@ const result = applyIteratively(script, modifiers, {
 The numeric third argument remains supported as shorthand for
 `{maxIterations: number}`.
 
+To continue the printed iteration count (and the remaining
+`maxIterations` budget) across multiple calls, pass the last completed
+count as `currentIteration`:
+
+```js
+script = applyIteratively(script, [stageA], {maxIterations: 20});
+// last log was e.g. Iteration #7
+script = applyIteratively(script, [stageB], {
+  currentIteration: 7,
+  maxIterations: 20,
+});
+// logs continue at #8; 13 passes remain before the shared cap
+```
+
+`currentIteration` is options-only. The numeric shorthand still starts at `0`.
+
+The next major release is planned to drop the numeric third argument and
+`currentIteration`. A module-level counter will keep a single sequence
+across calls. `{resetIterationsCounter: true}` will reprint that call from
+`0` without zeroing the module total, and
+`applyIteratively.resetIterationsCounter()` will reset the module counter.
+
 ### Modes
 
 - `mode: 'sequential'` is the current default. It rebuilds after each modifier, so a later modifier sees the earlier modifier's regenerated AST.
@@ -298,8 +320,8 @@ The numeric third argument remains supported as shorthand for
 - Batch mode throws if a modifier returns a different Arborist while the current one has pending edits. Use sequential mode for that pipeline so edits are never discarded.
 - Ordinary modifier exceptions are logged when enabled and do not prevent later modifiers from running.
 
-The next major release is planned to make `batch` the default and to construct
-the internal iterative Arborist with `compactScopes: true` and
+The next major release is also planned to make `batch` the default and to
+construct the internal iterative Arborist with `compactScopes: true` and
 `retainTokens: false` by default. Pass `mode` and `arboristOptions` explicitly
 when behavior must remain stable across that release.
 

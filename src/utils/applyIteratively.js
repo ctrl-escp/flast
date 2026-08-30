@@ -5,9 +5,15 @@ import {shouldUseNextMajorDefaults} from './nextMajorDefaults.js';
 /**
  * @typedef {object} ApplyIterativelyOptions
  * @property {number} [maxIterations=500] Maximum complete passes.
+ * @property {number} [currentIteration] Zero-based completed-iteration offset for logs and the remaining maxIterations budget.
  * @property {'batch'|'sequential'} [mode='sequential'] Rebuild strategy.
  * @property {import('../types.d.ts').GenerateFlatASTOptions} [arboristOptions] Initial Arborist options.
  * @property {boolean} [nextMajorDefaults] Test the planned breaking defaults.
+ *
+ * In the next major version the third argument becomes options-only, a module-level
+ * iteration counter replaces `currentIteration`, `{resetIterationsCounter: true}`
+ * reprints a call from 0 without zeroing that counter, and
+ * `applyIteratively.resetIterationsCounter()` resets the module counter.
  */
 
 const defaultMaxIterations = 500;
@@ -45,7 +51,7 @@ class BatchCompatibilityError extends Error {
  * normalizeApplyOptions({mode: 'batch', maxIterations: 10});
  *
  * @param {number|ApplyIterativelyOptions|undefined} value Third applyIteratively argument.
- * @return {Required<Pick<ApplyIterativelyOptions, 'maxIterations'|'mode'>> & {arboristOptions: object}} Normalized options.
+ * @return {Required<Pick<ApplyIterativelyOptions, 'maxIterations'|'mode'>> & {currentIteration: number, arboristOptions: object}} Normalized options.
  */
 function normalizeApplyOptions(value) {
   const options = typeof value === 'number' || value === undefined ?
@@ -54,10 +60,15 @@ function normalizeApplyOptions(value) {
     throw new TypeError('applyIteratively options must be a number or an options object.');
   }
   const maxIterations = options.maxIterations ?? defaultMaxIterations;
+  const currentIteration = options.currentIteration || 0;
   const useNextMajorDefaults = shouldUseNextMajorDefaults(options.nextMajorDefaults);
   const mode = options.mode ?? (useNextMajorDefaults ? 'batch' : 'sequential');
   if (!Number.isSafeInteger(maxIterations) || maxIterations < 0) {
     throw new RangeError('maxIterations must be a non-negative safe integer.');
+  }
+  if (options.currentIteration !== undefined &&
+    (!Number.isSafeInteger(options.currentIteration) || options.currentIteration < 0)) {
+    throw new RangeError('currentIteration must be a non-negative safe integer.');
   }
   if (!iterativeModes.has(mode)) {
     throw new RangeError(`Unknown applyIteratively mode "${mode}". Expected "batch" or "sequential".`);
@@ -71,6 +82,7 @@ function normalizeApplyOptions(value) {
     options.nextMajorDefaults === false ? {nextMajorDefaults: false} : null;
   return {
     maxIterations,
+    currentIteration,
     mode,
     arboristOptions: {...arboristDefaults, ...options.arboristOptions},
   };
@@ -156,16 +168,24 @@ function runModifier(arborist, modifier, iteration) {
  *   arboristOptions: {compactScopes: true, retainTokens: false},
  * });
  *
+ * @example
+ * applyIteratively(source, [stageB], {currentIteration: 7, maxIterations: 20});
+ *
+ * The next major version will drop the numeric third argument, drop
+ * `currentIteration`, keep a module-level iteration total, accept
+ * `{resetIterationsCounter: true}` to reprint a call from 0, and expose
+ * `applyIteratively.resetIterationsCounter()` to zero that total.
+ *
  * @param {string} script Target source.
  * @param {Array<(arborist: Arborist) => Arborist>} funcs Ordered modifier functions.
  * @param {number|ApplyIterativelyOptions} [maxIterationsOrOptions=500] Numeric legacy limit or options.
  * @return {string} Possibly modified source.
  */
 function applyIteratively(script, funcs, maxIterationsOrOptions = defaultMaxIterations) {
-  const {maxIterations, mode, arboristOptions} = normalizeApplyOptions(maxIterationsOrOptions);
+  const {maxIterations, currentIteration, mode, arboristOptions} = normalizeApplyOptions(maxIterationsOrOptions);
   if (maxIterations === 0) return script;
 
-  let iteration = 0;
+  let iteration = currentIteration || 0;
   try {
     let arborist = new Arborist(script, arboristOptions);
     while (arborist.ast?.length && iteration < maxIterations) {

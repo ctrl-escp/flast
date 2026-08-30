@@ -266,6 +266,65 @@ describe('Utils tests: applyIteratively', () => {
       'let value = 3;');
     assert.equal(calls, 3);
   });
+  it('Seeds the iteration counter from currentIteration', () => {
+    const originalLogFunc = logger.logFunc;
+    const originalLogLevel = logger.currentLogLevel;
+    const increment = function increment(arb) {
+      const target = arb.ast.find(node => node.type === 'Literal');
+      const value = target.value + 1;
+      arb.replaceNode(target, {type: 'Literal', value, raw: String(value)});
+      return arb;
+    };
+    const iterationNumbers = messages => messages
+      .filter(message => typeof message === 'string' && message.includes('Iteration #'))
+      .map(message => Number(message.match(/Iteration #(\d+)/)[1]));
+
+    try {
+      const defaultLogs = [];
+      logger.setLogFunc((...args) => defaultLogs.push(...args));
+      logger.setLogLevelLog();
+      applyIteratively('let value = 0;', [increment], {maxIterations: 1});
+      assert.deepEqual(iterationNumbers(defaultLogs), [1]);
+
+      const zeroLogs = [];
+      logger.setLogFunc((...args) => zeroLogs.push(...args));
+      applyIteratively('let value = 0;', [increment], {currentIteration: 0, maxIterations: 1});
+      assert.deepEqual(iterationNumbers(zeroLogs), [1]);
+
+      let calls = 0;
+      const countingIncrement = function countingIncrement(arb) {
+        calls++;
+        return increment(arb);
+      };
+      const continuedLogs = [];
+      logger.setLogFunc((...args) => continuedLogs.push(...args));
+      assert.equal(applyIteratively('let value = 0;', [countingIncrement], {
+        currentIteration: 7,
+        maxIterations: 10,
+      }), 'let value = 3;');
+      assert.equal(calls, 3);
+      assert.deepEqual(iterationNumbers(continuedLogs), [8, 9, 10]);
+
+      calls = 0;
+      assert.equal(applyIteratively('let value = 0;', [countingIncrement], {
+        currentIteration: 10,
+        maxIterations: 10,
+      }), 'let value = 0;');
+      assert.equal(calls, 0);
+
+      assert.throws(
+        () => applyIteratively('value;', [increment], {currentIteration: -1}),
+        /currentIteration must be a non-negative safe integer/,
+      );
+      assert.throws(
+        () => applyIteratively('value;', [increment], {currentIteration: 1.5}),
+        /currentIteration must be a non-negative safe integer/,
+      );
+    } finally {
+      logger.setLogFunc(originalLogFunc);
+      logger.setLogLevel(originalLogLevel);
+    }
+  });
 });
 describe('Utils tests: logger', () => {
   it('Verify logger sets the log level to DEBUG properly', () => {

@@ -46,6 +46,12 @@ export type ApplyIterativelyMode = 'batch' | 'sequential';
 export interface ApplyIterativelyOptions {
   /** Maximum complete modifier passes. @default 500 */
   maxIterations?: number;
+  /**
+   * Zero-based completed-iteration offset for logs and the remaining
+   * `maxIterations` budget. The next major version replaces this with a
+   * module-level counter; see `applyIteratively` docs.
+   */
+  currentIteration?: number;
   /** Rebuild once per modifier or once per complete pass. @default 'sequential' */
   mode?: ApplyIterativelyMode;
   /** Options used to construct the initial Arborist. */
@@ -342,6 +348,11 @@ export function mapIdentifierRelations(node: ASTNode, scopeVarMaps: ScopeVariabl
 
 /**
  * Run Arborist modifiers until a complete pass stops changing the source.
+ *
+ * `currentIteration` seeds the shared log/budget counter. The next major
+ * version drops the numeric third argument and `currentIteration` in favor of
+ * a module-level total, `{resetIterationsCounter: true}`, and
+ * `applyIteratively.resetIterationsCounter()`.
  *
  * @example
  * applyIteratively(source, [removeDeadCode, simplifyExpressions], 20);
